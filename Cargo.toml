@@ -1,0 +1,24 @@
+[package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+authors = ["Philippe Faist"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/phfaist/untechxt"
+
+[lints.rust]
+missing_docs = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+bare_urls = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[dependencies]
+# unicode-normalization for NFC decomposition etc. default-features=false so we
+# have no_std+alloc support.
+unicode-normalization = { version = "0.1", default-features = false }
