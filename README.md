@@ -52,6 +52,57 @@ lookup tables or custom callback functions), your preferred policy when unknown
 characters are encountered, along with more options.
 
 
+## Command line
+
+The `untechxt` command encodes files, or its standard input, from the terminal.
+The command lives in a crate of its own, `untechxt-cli`, so that the library
+keeps its single dependency.  Install the command from a checkout of this
+repository with `cargo install --path rust/untechxt-cli`.
+
+```sh
+$ echo 'Café — 100%' | untechxt
+Caf\'e {\textemdash} 100\%
+```
+
+The command writes the encoded LaTeX to its standard output, or to the file
+given with the option `-o`.  It prints a short report to its standard error
+when the output needs packages or definitions in the document preamble, or when
+the input contained characters with no known LaTeX representation:
+
+```sh
+$ echo '𝟙 and ⅓' | untechxt > body.tex
+untechxt: the output needs the following in the document preamble:
+\usepackage{dsfont}
+\usepackage{nicefrac}
+```
+
+The main options are the following.  Run `untechxt --help` for the complete
+description.
+
+- `--non-ascii-only` keeps every ASCII character unchanged, including the
+  characters that have a special meaning for LaTeX such as `\` and `%`.  Use
+  this option when the input already contains LaTeX code.  The default is
+  `--no-non-ascii-only`, which also encodes these special characters.
+
+- `--replacement-protection` selects what is written around a replacement
+  that ends with a macro name, so that the text that follows cannot become
+  part of the macro name.  The default, `braces`, writes `{\textemdash}`.  The
+  other values are `braces-after`, `braces-all`, `space`, and `none`.
+
+- `--math-mode` encodes text that goes inside LaTeX math.  Text-only
+  replacements are then wrapped in `\textnormal{...}`, and math symbols are
+  written without `\ensuremath{...}`.
+
+- `--unknown-char-policy` selects what is written for a character with no
+  known LaTeX representation.  The default, `keep`, writes the character
+  itself.  The other values are `ignore`, `fail`, `replace`, and `unihex`.
+
+- `--preamble FILE` writes the required preamble lines to `FILE` instead of
+  reporting them on the standard error.
+
+- `-q` prints no report.
+
+
 ## Documentation
 
 Use `cargo doc` to generate the API documentation with all the fun details!
@@ -59,8 +110,9 @@ Use `cargo doc` to generate the API documentation with all the fun details!
 
 ## Crate Dependencies and Features
 
-The crate is compatible with `no_std` + `alloc` (uses strings and vectors).  Its
-single dependency is `unicode-normalization`.
+The library crate is compatible with `no_std` + `alloc` (uses strings and
+vectors).  Its single dependency is `unicode-normalization`.  The command-line
+crate `untechxt-cli` additionally depends on `clap`.
 
 The feature `std` (on by default) adds support for streaming in `std::io::Write`
 without creating temporary owned strings.  Disable the `std` feature for a

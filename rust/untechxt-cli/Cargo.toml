@@ -1,0 +1,36 @@
+[package]
+name = "untechxt-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Command-line encoder from Unicode text to LaTeX source"
+readme = "../../README.md"
+license.workspace = true
+repository.workspace = true
+keywords = ["latex", "unicode", "encoding", "text", "cli"]
+categories = ["command-line-utilities", "text-processing"]
+
+[lints]
+workspace = true
+
+# The package is `untechxt-cli` and the installed command is `untechxt`: the
+# binary name is what users type, and the package name tells the program apart
+# from the library in the workspace and on crates.io.
+[[bin]]
+name = "untechxt"
+path = "src/main.rs"
+# The binary and the library share the name `untechxt`, and rustdoc writes
+# both of them to `target/doc/untechxt/`, which is the known cargo bug
+# rust-lang/cargo#6313 and makes `cargo doc --workspace` warn about the
+# colliding file name. The binary has no API to document, so leaving it out of
+# rustdoc keeps the documentation build free of warnings. The documentation of
+# the program is its `--help` output and the README. The ordinary compile still
+# holds the items of this crate to `missing_docs`.
+doc = false
+
+# The program is the std-linking user of a `no_std` library: the file and
+# stream I/O is here, because the library must not do any.
+[dependencies]
+untechxt = { path = "../untechxt", version = "0.1.0" }
+clap.workspace = true

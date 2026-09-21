@@ -3,7 +3,7 @@
 # pinned here. Version 3 is also MSRV-aware: cargo declines a dependency release
 # whose own `rust-version` exceeds ours.
 resolver = "3"
-members = ["untechxt"]
+members = ["untechxt", "untechxt-cli"]
 
 # Shared metadata inherited by member crates (`<field>.workspace = true`).
 [workspace.package]
@@ -28,6 +28,9 @@ bare_urls = "warn"
 # unicode-normalization for NFC decomposition etc. default-features=false so we
 # have no_std+alloc support.
 unicode-normalization = { version = "0.1", default-features = false }
+# The command-line crate only. The derive feature is how `untechxt-cli`
+# declares its command line, as a struct with attributes.
+clap = { version = "4", features = ["derive"] }
 # Benchmarks only. No default features: `plotters` and `rayon` come with them,
 # and this crate's benchmarks want neither HTML reports nor a thread pool.
 criterion = { version = "0.5", default-features = false, features = [

@@ -6,7 +6,9 @@ quick-and-dirty port lives in `dev-docs/initial-rust-port/` (reference only; its
 data tables, tests, and golden file are the parts worth carrying over).
 
 The cargo workspace is `rust/` (a sibling of possible future bindings); run
-every cargo command from there. The library crate is `rust/untechxt/`.
+every cargo command from there. The library crate is `rust/untechxt/`, and the
+command-line program is `rust/untechxt-cli/` (its binary is named `untechxt`).
+The library must not depend on the command-line crate's dependencies.
 
 ## Working conventions
 
