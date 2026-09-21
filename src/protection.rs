@@ -10,9 +10,9 @@
 use alloc::borrow::Cow;
 
 use crate::outbuffer::OutBuffer;
-use crate::profile::Profile;
+use crate::preamble::Profile;
 use crate::report::EncodeReporter;
-use crate::rule::BoxError;
+use crate::BoxError;
 
 /// In which of LaTeX's two modes an encoded value may be used.
 ///
@@ -64,7 +64,9 @@ impl ValueTermination {
     /// time.
     ///
     /// ```
-    /// use untechxt::ValueTermination::{self, ValueEndsWithNamedMacro, ValueIsSelfTerminating};
+    /// use untechxt::protection::ValueTermination::{
+    ///     self, ValueEndsWithNamedMacro, ValueIsSelfTerminating,
+    /// };
     ///
     /// assert_eq!(ValueTermination::inspect(r"\textemdash"), ValueEndsWithNamedMacro);
     /// assert_eq!(ValueTermination::inspect(r"\hat\i"), ValueEndsWithNamedMacro);
@@ -284,10 +286,11 @@ impl ModeWrapper {
 /// needed; every field is public and can be set at run time.
 ///
 /// ```
-/// use untechxt::{
-///     NoReport, ProtectInput, ReplacementProtection, ReplacementProtectionHint,
+/// use untechxt::protection::{
+///     ProtectInput, ReplacementProtection, ReplacementProtectionHint,
 ///     StandardProtection,
 /// };
+/// use untechxt::report::NoReport;
 ///
 /// let protection = StandardProtection::text_mode();
 /// let write = |encoded: &str, hint| {
@@ -435,10 +438,11 @@ impl ReplacementProtection for StandardProtection {
 /// also the example of how to write one.
 ///
 /// ```
-/// use untechxt::{
-///     BracesAroundAll, NoReport, ProtectInput, ReplacementProtection,
+/// use untechxt::protection::{
+///     BracesAroundAll, ProtectInput, ReplacementProtection,
 ///     ReplacementProtectionHint, StandardProtection,
 /// };
+/// use untechxt::report::NoReport;
 ///
 /// let protection = BracesAroundAll(StandardProtection::text_mode());
 /// let mut out = String::new();

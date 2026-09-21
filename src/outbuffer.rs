@@ -5,7 +5,7 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 
-use crate::rule::BoxError;
+use crate::BoxError;
 
 /// Abstract output assembly: where an encoder appends what it writes.
 ///
@@ -55,7 +55,7 @@ impl OutBuffer for String {
 /// [`core::fmt::Formatter`], a `String`, anything that formats.
 ///
 /// ```
-/// use untechxt::{FmtOut, OutBuffer};
+/// use untechxt::outbuffer::{FmtOut, OutBuffer};
 ///
 /// let mut out = FmtOut(String::new());
 /// out.push_str("Caf").unwrap();

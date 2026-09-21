@@ -1,22 +1,40 @@
-//! [`Rule`]: what turns a piece of the input into LaTeX, and what it is
-//! given and hands back.
+//! Rules: the [`Rule`] trait, the types a rule takes and returns, and the
+//! ways to build a rule.
+//!
+//! A rule maps an input character, or an input substring, to its LaTeX
+//! encoding. This module contains everything that is specific to rules:
+//!
+//! - The [`Rule`] trait itself. A rule takes a [`RuleInput`] and returns a
+//!   [`RuleResult`], which contains an [`EncodedReplacement`] when the rule
+//!   matched.
+//! - The function [`rule_fn`], which creates a rule from a closure (see
+//!   [`RuleFn`]).
+//! - The struct [`RuleChain`], which combines several rules into a single
+//!   rule. The type aliases [`DynRuleChain`] and [`LocalDynRuleChain`] are
+//!   chains of boxed rules that are assembled at run time.
+//! - The struct [`AsciiSet`], a set of ASCII characters. A rule uses an
+//!   [`AsciiSet`] to tell the encoder at which ASCII characters the rule may
+//!   match (see [`Rule::ascii_triggers`]).
+//!
+//! Lookup tables are rules as well. See the [`lookuptable`](crate::lookuptable)
+//! module for tables built at run time, the
+//! [`statictable`](crate::statictable) module for tables compiled at compile
+//! time, and the [`builtin`](crate::builtin) module for the tables that come
+//! with the crate.
+
+mod asciiset;
+mod chain;
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use core::fmt;
 
-use crate::asciiset::AsciiSet;
-use crate::profile::Profile;
-use crate::replacement_protection::ReplacementProtectionHint;
+use crate::preamble::Profile;
+use crate::protection::ReplacementProtectionHint;
+use crate::BoxError;
 
-/// The error payload a rule, an output buffer or a protection strategy can
-/// fail with: the ecosystem's boxed error.
-///
-/// It is a fixed type rather than a type parameter, so that no signature of
-/// this crate carries an error parameter. A foreign-language callback — a
-/// Python or JavaScript rule — puts its exception in here, stringified if it
-/// has to be.
-pub type BoxError = Box<dyn core::error::Error + Send + Sync + 'static>;
+pub use self::asciiset::AsciiSet;
+pub use self::chain::{DynRuleChain, LocalDynRuleChain, RuleChain, RuleList};
 
 /// What a rule call reports. The rule may report (i) that it was successfully
 /// applied, returning the associated success data (`Ok(Some(…))`, see
@@ -32,7 +50,7 @@ pub type RuleResult<'a> = Result<Option<EncodedReplacement<'a>>, BoxError>;
 /// The encoder tries its rules in order at every position and the first match
 /// wins: no rule is tried after a match, and no longest match is sought.
 /// Several rules are combined into one with a
-/// [`RuleChain`](crate::RuleChain).
+/// [`RuleChain`].
 ///
 /// [`Debug`](core::fmt::Debug) is the only supertrait. `Send` and `Sync` are
 /// deliberately **not** required: they are auto traits, so an
@@ -41,11 +59,12 @@ pub type RuleResult<'a> = Result<Option<EncodedReplacement<'a>>, BoxError>;
 /// [`Rc`](alloc::rc::Rc) or a [`RefCell`](core::cell::RefCell).
 ///
 /// A closure becomes a rule through [`rule_fn`]; a lookup table of the user's
-/// through [`TableRule`](crate::TableRule). `&R`, `Box<R>` and `Option<R>`
-/// are rules whenever `R` is.
+/// through [`TableRule`](crate::lookuptable::TableRule). `&R`, `Box<R>` and
+/// `Option<R>` are rules whenever `R` is.
 ///
 /// ```
-/// use untechxt::{rule_fn, Rule, RuleInput, ReplacementProtectionHint};
+/// use untechxt::protection::ReplacementProtectionHint;
+/// use untechxt::rule::{rule_fn, Rule, RuleInput};
 ///
 /// // A rule that spells out an ellipsis, however it was typed.
 /// let ellipsis = rule_fn(|input: RuleInput<'_>| {
@@ -348,10 +367,12 @@ where
 /// which is a different input every time.)
 ///
 /// ```
-/// use untechxt::{rule_fn, Encoder, ReplacementProtectionHint};
+/// use untechxt::protection::ReplacementProtectionHint;
+/// use untechxt::rule::rule_fn;
+/// use untechxt::Encoder;
 ///
 /// // Pass LaTeX that is already in the input through untouched.
-/// let verbatim = rule_fn(|input: untechxt::RuleInput<'_>| {
+/// let verbatim = rule_fn(|input: untechxt::rule::RuleInput<'_>| {
 ///     let rest = input.rest();
 ///     Ok(rest.strip_prefix("[[").and_then(|rest| rest.find("]]").map(|end| {
 ///         input.replace_prefix(

@@ -9,11 +9,13 @@ use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
 /// What the encoder puts the input through before any rule is tried.
 ///
 /// The positions in an [`EncodeError`](crate::EncodeError) and in
-/// [`EncodeReporter::report_unknown_char`](crate::EncodeReporter::report_unknown_char)
-/// are byte offsets into the text the normalizer returned, which is not the
-/// caller's text when the normalizer changed it. A caller who needs offsets
-/// into its own text normalizes it once with [`nfc`] and encodes with
-/// [`NoNormalization`].
+/// [`EncodeReporter::report_unknown_char`] are byte offsets into the text the
+/// normalizer returned, which is not the caller's text when the normalizer
+/// changed it. A caller who needs offsets into its own text normalizes it
+/// once with [`nfc`] and encodes with [`NoNormalization`].
+///
+/// [`EncodeReporter::report_unknown_char`]:
+///     crate::report::EncodeReporter::report_unknown_char
 pub trait InputNormalizer: core::fmt::Debug {
     /// The text the rules will see. Returning `text` itself, borrowed, is
     /// what a normalizer does when it has nothing to change.
@@ -28,7 +30,9 @@ pub trait InputNormalizer: core::fmt::Debug {
 /// encodes as `\'e`.
 ///
 /// ```
-/// use untechxt::{Encoder, InputNormalizer, NormalizeNfc, RuleChain};
+/// use untechxt::normalizer::{InputNormalizer, NormalizeNfc};
+/// use untechxt::rule::RuleChain;
+/// use untechxt::Encoder;
 ///
 /// assert_eq!(NormalizeNfc.normalize("Cafe\u{301}"), "Caf\u{e9}");
 /// let _ = Encoder::new(RuleChain::new(())).with_normalizer(NormalizeNfc);
@@ -70,7 +74,7 @@ impl InputNormalizer for NoNormalization {
 /// the result with [`NoNormalization`].
 ///
 /// ```
-/// use untechxt::nfc;
+/// use untechxt::normalizer::nfc;
 ///
 /// assert_eq!(nfc("Cafe\u{301}"), "Caf\u{e9}");
 /// assert_eq!(nfc("Caf\u{e9}"), "Caf\u{e9}");

@@ -37,9 +37,11 @@
 //! provided the rules are thread-safe.
 //!
 //! - A *rule* specifies how an input character, or an input substring, is
-//!   mapped to a LaTeX encoded value.  A special rule type, [`RuleChain`],
-//!   tries several rules in order until the first match.  Use a [`RuleChain`]
-//!   whenever the encoder should apply multiple rules.
+//!   mapped to a LaTeX encoded value.  The [`default_rules`] function returns
+//!   the default rules of the crate, which use a built-in symbol encoding
+//!   table.  A special rule type, [`RuleChain`], tries several rules in order
+//!   until the first match.  Use a [`RuleChain`] whenever the encoder should
+//!   apply multiple rules.
 //!
 //! - *Replacement protection* refers to additional syntax applied to the LaTeX
 //!   encoded symbol to ensure the generated LaTeX code is valid.  For instance,
@@ -83,9 +85,9 @@
 //!   characters (see [`EncodeReporter`]).
 //!
 //! ```
-//! use untechxt::{Encoder, DEFAULTS};
+//! use untechxt::{default_rules, Encoder};
 //!
-//! let encoder = Encoder::new(&DEFAULTS);
+//! let encoder = Encoder::new(default_rules());
 //! let (body, report) = encoder.encode_with_report("𝟙 and ⅓").unwrap();
 //! assert_eq!(body, r"\ensuremath{\mathds{1}} and \nicefrac{1}{3}");
 //!
@@ -121,16 +123,18 @@
 //!
 //! Rules come in three kinds.
 //!
-//! - **Tables.** A [`LookupTable`] answers for single characters. The builtin
-//!   lookup table [`DEFAULTS`] provides reasonable encoding defaults. Further
-//!   builtin tables include [`NON_ASCII`], which only contains the non-ASCII
-//!   section of the `DEFAULTS` lookup table, and [`ASCII_SPECIALS`], a small
-//!   table that only encodes the few printable ASCII characters that have
-//!   special meaning for LaTeX.  [`DynTable`] is a table built at run time;
-//!   [`compile_static_table!`] compiles a table of your own at compile time
-//!   into one of the layouts of [`statictable`]. The crate's own tables are
-//!   rules already. Create your rule from your custom [`LookupTable`] with
-//!   [`TableRule`].
+//! - **Tables.** A [`LookupTable`] answers for single characters. The
+//!   [`default_rules`] function returns the default rules, which use the
+//!   builtin lookup table [`DEFAULT_TABLE`] and provide reasonable encoding
+//!   defaults. The [`builtin`] module contains further builtin tables: the
+//!   table [`DEFAULT_TABLE_NON_ASCII`] only contains the non-ASCII section of
+//!   the default table, and the table [`DEFAULT_TABLE_ASCII_SPECIALS`] is a
+//!   small table that only encodes the few printable ASCII characters that
+//!   have special meaning for LaTeX.  [`DynTable`] is a table built at run
+//!   time; [`compile_static_table!`] compiles a table of your own at compile
+//!   time into one of the layouts of the [`statictable`] module. The crate's
+//!   own tables are rules already. Create your rule from your custom
+//!   [`LookupTable`] with [`TableRule`].
 //! - **Closures**, through [`rule_fn`]. A closure rule may hand out owned
 //!   strings, literals, `&'static Profile`s and slices of the input, but it
 //!   cannot lend out its own captures.
@@ -142,10 +146,10 @@
 //!   an [`Encoder`] is `Send` and `Sync` exactly when its rule(s) are.
 //!
 //! ```
-//! use untechxt::{
-//!     rule_fn, AsciiSet, DynTable, Encoder, ReplacementProtectionHint as Hint,
-//!     RuleChain, RuleInput, DEFAULTS,
-//! };
+//! use untechxt::lookuptable::DynTable;
+//! use untechxt::protection::ReplacementProtectionHint as Hint;
+//! use untechxt::rule::{rule_fn, AsciiSet, RuleChain, RuleInput};
+//! use untechxt::{default_rules, Encoder};
 //!
 //! // A table ahead of the defaults overrides one character; a closure after
 //! // them reads a sequence of characters, which a table cannot.
@@ -159,7 +163,9 @@
 //! })
 //! .with_ascii_triggers(AsciiSet::of("."));
 //!
-//! let encoder = Encoder::new(RuleChain::new((overrides, &DEFAULTS, ellipsis)));
+//! let encoder = Encoder::new(
+//!     RuleChain::new((overrides, default_rules(), ellipsis))
+//! );
 //! assert_eq!(encoder.encode("100%... é").unwrap(), r"100{\textpercent}{\ldots} \'e");
 //! ```
 //!
@@ -172,22 +178,20 @@
 //! [`ReplacementProtectionHint`] — the encoder never inspects a value behind
 //! its rule's back:
 //!
-//! - [`DoNotProtect`](ReplacementProtectionHint::DoNotProtect): write the
-//!   value exactly as it is, the rule vouching for it in its context. A rule
-//!   that passes existing LaTeX through uses this.
-//! - [`Value`](ReplacementProtectionHint::Value): the [`ValueMode`] the value
-//!   is valid in ([`TextOnly`](ValueMode::TextOnly),
-//!   [`MathOnly`](ValueMode::MathOnly) or [`AnyMode`](ValueMode::AnyMode)) and
-//!   its [`ValueTermination`] — whether arbitrary text may follow it directly,
-//!   or whether it ends with a named macro. A rule that does not know reads
-//!   the termination off the value's form with [`ValueTermination::inspect`],
-//!   which is what [`ReplacementProtectionHint::text_only`] and its two
-//!   companions do, at compile time in a static table.
+//! - [`DoNotProtect`]: write the value exactly as it is, the rule vouching
+//!   for it in its context. A rule that passes existing LaTeX through uses
+//!   this.
+//! - [`Value`]: the [`ValueMode`] the value is valid in ([`TextOnly`],
+//!   [`MathOnly`] or [`AnyMode`]) and its [`ValueTermination`] — whether
+//!   arbitrary text may follow it directly, or whether it ends with a named
+//!   macro. A rule that does not know reads the termination off the value's
+//!   form with [`ValueTermination::inspect`], which is what
+//!   [`ReplacementProtectionHint::text_only`] and its two companions do, at
+//!   compile time in a static table.
 //!
 //! The mode lives in the hint and not in the value: a table entry holds the
-//! bare `\alpha` marked [`MathOnly`](ValueMode::MathOnly), not
-//! `\ensuremath{\alpha}`, so that math output writes it as it is and text
-//! output wraps it once.
+//! bare `\alpha` marked [`MathOnly`], not `\ensuremath{\alpha}`, so that math
+//! output writes it as it is and text output wraps it once.
 //!
 //! What is written around the value is then the encoder's
 //! [`ReplacementProtection`] strategy's business. Protection is stateless:
@@ -195,41 +199,39 @@
 //! what was written before. [`StandardProtection`] is the strategy the crate
 //! offers, and every one of its fields is public and settable at run time:
 //!
-//! - [`output_mode`](StandardProtection::output_mode), which of LaTeX's two
-//!   modes the output is going into. A value whose mode does not match is
-//!   wrapped by [`math_wrap`](StandardProtection::math_wrap)
-//!   (`\ensuremath{…}`) or by [`text_wrap`](StandardProtection::text_wrap);
-//!   such a [`ModeWrapper`] may itself need something in the preamble, which
-//!   is why the reporter reaches the strategy too.
-//! - [`protect_names`](StandardProtection::protect_names), what is written
-//!   around a value that ends with a named macro:
-//!   [`BracesAround`](MacroNameProtection::BracesAround) (`{\textemdash}`,
-//!   the default and the safe choice in text mode), `BracesAfter`
-//!   (`\textemdash{}`), `SpaceAfterMacroName` (`\pm `, the default of
-//!   [`math_mode`](StandardProtection::math_mode), where spaces are ignored,
-//!   and unsafe in text mode, where TeX would swallow a space of the input),
-//!   or `NoProtection`.
+//! - [`output_mode`], which of LaTeX's two modes the output is going into. A
+//!   value whose mode does not match is wrapped by [`math_wrap`]
+//!   (`\ensuremath{…}`) or by [`text_wrap`]; such a [`ModeWrapper`] may
+//!   itself need something in the preamble, which is why the reporter reaches
+//!   the strategy too.
+//! - [`protect_names`], what is written around a value that ends with a named
+//!   macro: [`BracesAround`] (`{\textemdash}`, the default and the safe choice
+//!   in text mode), `BracesAfter` (`\textemdash{}`), `SpaceAfterMacroName`
+//!   (`\pm `, the default of [`math_mode`], where spaces are ignored, and
+//!   unsafe in text mode, where TeX would swallow a space of the input), or
+//!   `NoProtection`.
 //!
 //! ```
-//! use untechxt::{BracesAroundAll, Encoder, StandardProtection, DEFAULTS};
+//! use untechxt::protection::{BracesAroundAll, StandardProtection};
+//! use untechxt::{default_rules, Encoder};
 //!
 //! // Text output: a math value is wrapped once, and a value that ends with a
 //! // named macro is braced.
-//! let text = Encoder::new(&DEFAULTS);
+//! let text = Encoder::new(default_rules());
 //! assert_eq!(text.encode("α≤β").unwrap(),
 //!            r"\ensuremath{\alpha}\ensuremath{\leq}\ensuremath{\beta}");
 //! assert_eq!(text.encode("—").unwrap(), r"{\textemdash}");
 //!
 //! // Math output: the same values go in bare, ended by a space; a text value
 //! // is the one that has to be wrapped.
-//! let math = Encoder::new(&DEFAULTS).with_protection(
+//! let math = Encoder::new(default_rules()).with_protection(
 //!     StandardProtection::math_mode()
 //! );
 //! assert_eq!(math.encode("α≤β").unwrap(), r"\alpha \leq \beta ");
 //! assert_eq!(math.encode("é").unwrap(), r"\textnormal{\'e}");
 //!
 //! // A strategy of its own: braces around every value.
-//! let compat = Encoder::new(&DEFAULTS).with_protection(
+//! let compat = Encoder::new(default_rules()).with_protection(
 //!     BracesAroundAll(StandardProtection::text_mode())
 //! );
 //! assert_eq!(compat.encode("Café — α").unwrap(),
@@ -260,14 +262,15 @@
 //! resort, and anything richer is a rule at the end of the chain.
 //!
 //! ```
-//! use untechxt::{unknown_unihex, Encoder, UnknownCharPolicy, DEFAULTS};
+//! use untechxt::{default_rules, unknown_unihex, Encoder, UnknownCharPolicy};
 //!
 //! // The Thai letter is in no builtin entry: it is kept, and reported.
-//! let (out, report) = Encoder::new(&DEFAULTS).encode_with_report("ธ").unwrap();
+//! let encoder = Encoder::new(default_rules());
+//! let (out, report) = encoder.encode_with_report("ธ").unwrap();
 //! assert_eq!(out, "ธ");
 //! assert!(report.unknown_chars.contains(&'ธ'));
 //!
-//! let spelled_out = Encoder::new(&DEFAULTS).with_unknown_chars(
+//! let spelled_out = Encoder::new(default_rules()).with_unknown_chars(
 //!     UnknownCharPolicy::callback(unknown_unihex)
 //! );
 //! assert_eq!(spelled_out.encode("ธ").unwrap(),
@@ -296,9 +299,10 @@
 //! fragments of one document can all report into one.
 //!
 //! ```
-//! use untechxt::{Encoder, PreambleNeeds, DEFAULTS};
+//! use untechxt::preamble::PreambleNeeds;
+//! use untechxt::{default_rules, Encoder};
 //!
-//! let encoder = Encoder::new(&DEFAULTS);
+//! let encoder = Encoder::new(default_rules());
 //! let mut body = String::new();
 //! let mut needs = PreambleNeeds::new();
 //! for fragment in ["𝟙 ", "and ⅓"] {
@@ -328,12 +332,13 @@
 //! linker drops them.
 //!
 //! ```
-//! use untechxt::{encode, nfc, Encoder, NoNormalization, DEFAULTS};
+//! use untechxt::normalizer::{nfc, NoNormalization};
+//! use untechxt::{default_rules, encode, Encoder};
 //!
 //! // `e` followed by a combining acute accent, composed into `é` first.
 //! assert_eq!(encode("Cafe\u{301}"), r"Caf\'e");
 //!
-//! let as_is = Encoder::new(&DEFAULTS).with_normalizer(NoNormalization);
+//! let as_is = Encoder::new(default_rules()).with_normalizer(NoNormalization);
 //! assert_eq!(as_is.encode("Cafe\u{301}").unwrap(), "Cafe\u{301}"); // unknown, kept
 //! assert_eq!(as_is.encode(&nfc("Cafe\u{301}")).unwrap(), r"Caf\'e");
 //! ```
@@ -350,10 +355,13 @@
 //! passed through as it is.
 //!
 //! ```
-//! use untechxt::{Encoder, FmtOut, NoReport, DEFAULTS};
+//! use untechxt::outbuffer::FmtOut;
+//! use untechxt::report::NoReport;
+//! use untechxt::{default_rules, Encoder};
 //!
 //! let mut out = FmtOut(String::new());
-//! Encoder::new(&DEFAULTS).encode_into("Café", &mut out, &mut NoReport).unwrap();
+//! let encoder = Encoder::new(default_rules());
+//! encoder.encode_into("Café", &mut out, &mut NoReport).unwrap();
 //! assert_eq!(out.0, r"Caf\'e");
 //! ```
 //!
@@ -377,6 +385,31 @@
 //! answers. A table answers its own keys, and
 //! [`RuleFn::with_ascii_triggers`] is where a closure rule states its own, as
 //! the ellipsis rule above states its `.`.
+//!
+//! # Organization of the crate
+//!
+//! The items that most programs need are at the root of the crate: the
+//! [`encode`] and [`default_rules`] functions, the [`Encoder`] struct with its
+//! error type [`EncodeError`], and the [`UnknownCharPolicy`] enum. All other
+//! items are in one module per concept, and each item has a single public
+//! path:
+//!
+//! - The [`rule`] module contains the [`Rule`] trait, closure rules and rule
+//!   chains.
+//! - The [`lookuptable`] module contains the [`LookupTable`] trait and lookup
+//!   tables that are built at run time.
+//! - The [`statictable`] module contains lookup tables that are compiled at
+//!   compile time.
+//! - The [`builtin`] module contains the builtin lookup tables.
+//! - The [`protection`] module contains the replacement protection hints and
+//!   strategies.
+//! - The [`preamble`] module contains the types that describe what the
+//!   encoded LaTeX needs in the preamble of the document.
+//! - The [`report`] module contains the [`EncodeReport`] struct and the
+//!   [`EncodeReporter`] trait.
+//! - The [`normalizer`] module contains the input normalizers.
+//! - The [`outbuffer`] module contains the types that the output can be
+//!   written to.
 //!
 //! # `no_std`, `alloc`, and the `std` feature
 //!
@@ -411,13 +444,73 @@
 //! What has no counterpart here: regular-expression rules (a closure rule
 //! expresses them); per-rule protection overrides (a rule's only say is its
 //! hint); the `non_ascii_only` flag, which silently disabled multi-character
-//! rules that start at an ASCII character — leave [`ASCII_SPECIALS`] out of
-//! the chain, or encode with [`NON_ASCII`], instead; the
+//! rules that start at an ASCII character — leave
+//! [`DEFAULT_TABLE_ASCII_SPECIALS`] out of the chain, or encode with
+//! [`DEFAULT_TABLE_NON_ASCII`], instead; the
 //! `'braces-almost-all'` protection mode ([`BracesAroundAll`] is
 //! `'braces-all'`); and the `'unihex'` unknown-character mode, which is the
 //! plain function [`unknown_unihex`] handed to
 //! [`UnknownCharPolicy::callback`]. Positions are byte offsets, where
 //! pylatexenc counts code points.
+//!
+//! [`AnyMode`]: protection::ValueMode::AnyMode
+//! [`AsciiSet`]: rule::AsciiSet
+//! [`AsciiSet::ALL`]: rule::AsciiSet::ALL
+//! [`AsciiSet::EMPTY`]: rule::AsciiSet::EMPTY
+//! [`BracesAround`]: protection::MacroNameProtection::BracesAround
+//! [`BracesAroundAll`]: protection::BracesAroundAll
+//! [`Chunk`]: preamble::Chunk
+//! [`ChunkPreamble`]: preamble::ChunkPreamble
+//! [`compile_static_table!`]: statictable::compile_static_table!
+//! [`DEFAULT_TABLE`]: builtin::DEFAULT_TABLE
+//! [`DEFAULT_TABLE_ASCII_SPECIALS`]: builtin::DEFAULT_TABLE_ASCII_SPECIALS
+//! [`DEFAULT_TABLE_NON_ASCII`]: builtin::DEFAULT_TABLE_NON_ASCII
+//! [`DoNotProtect`]: protection::ReplacementProtectionHint::DoNotProtect
+//! [`DynRuleChain`]: rule::DynRuleChain
+//! [`DynTable`]: lookuptable::DynTable
+//! [`EncodedReplacement`]: rule::EncodedReplacement
+//! [`EncodedReplacement::with_needs`]: rule::EncodedReplacement::with_needs
+//! [`EncodeReport`]: report::EncodeReport
+//! [`EncodeReporter`]: report::EncodeReporter
+//! [`EncodeReporter::report_unknown_char`]:
+//!     report::EncodeReporter::report_unknown_char
+//! [`FmtOut`]: outbuffer::FmtOut
+//! [`InputNormalizer`]: normalizer::InputNormalizer
+//! [`LocalDynRuleChain`]: rule::LocalDynRuleChain
+//! [`LookupTable`]: lookuptable::LookupTable
+//! [`math_mode`]: protection::StandardProtection::math_mode
+//! [`math_wrap`]: protection::StandardProtection::math_wrap
+//! [`MathOnly`]: protection::ValueMode::MathOnly
+//! [`ModeWrapper`]: protection::ModeWrapper
+//! [`nfc`]: normalizer::nfc
+//! [`NoNormalization`]: normalizer::NoNormalization
+//! [`NoReport`]: report::NoReport
+//! [`NormalizeNfc`]: normalizer::NormalizeNfc
+//! [`OutBuffer`]: outbuffer::OutBuffer
+//! [`output_mode`]: protection::StandardProtection::output_mode
+//! [`PreambleNeeds`]: preamble::PreambleNeeds
+//! [`PreambleNeeds::write_preamble`]: preamble::PreambleNeeds::write_preamble
+//! [`Profile`]: preamble::Profile
+//! [`protect_names`]: protection::StandardProtection::protect_names
+//! [`ProtectInput`]: protection::ProtectInput
+//! [`ReplacementProtection`]: protection::ReplacementProtection
+//! [`ReplacementProtectionHint`]: protection::ReplacementProtectionHint
+//! [`ReplacementProtectionHint::text_only`]:
+//!     protection::ReplacementProtectionHint::text_only
+//! [`Rule`]: rule::Rule
+//! [`Rule::ascii_triggers`]: rule::Rule::ascii_triggers
+//! [`rule_fn`]: rule::rule_fn
+//! [`RuleChain`]: rule::RuleChain
+//! [`RuleFn::with_ascii_triggers`]: rule::RuleFn::with_ascii_triggers
+//! [`RuleInput`]: rule::RuleInput
+//! [`StandardProtection`]: protection::StandardProtection
+//! [`TableRule`]: lookuptable::TableRule
+//! [`text_wrap`]: protection::StandardProtection::text_wrap
+//! [`TextOnly`]: protection::ValueMode::TextOnly
+//! [`Value`]: protection::ReplacementProtectionHint::Value
+//! [`ValueMode`]: protection::ValueMode
+//! [`ValueTermination`]: protection::ValueTermination
+//! [`ValueTermination::inspect`]: protection::ValueTermination::inspect
 
 #![no_std]
 
@@ -426,57 +519,47 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-pub mod asciiset;
 pub mod builtin;
-pub mod chain;
-pub mod encoder;
+mod defaults;
+mod encoder;
 pub mod lookuptable;
 pub mod normalizer;
 pub mod outbuffer;
 pub mod preamble;
-pub mod profile;
-pub mod replacement_protection;
+pub mod protection;
 pub mod report;
 pub mod rule;
 pub mod statictable;
-pub mod unknown_char;
+mod unknown_char;
 
-pub use crate::asciiset::AsciiSet;
-pub use crate::builtin::{BuiltinTable, ASCII_SPECIALS, DEFAULTS, NON_ASCII};
-pub use crate::chain::{DynRuleChain, LocalDynRuleChain, RuleChain, RuleList};
+pub use crate::defaults::{default_rules, DefaultRules};
 pub use crate::encoder::{EncodeError, Encoder};
-pub use crate::lookuptable::{DynTable, ExceptAscii, LookupTable, OnlyAscii, TableEntry, TableRule};
-pub use crate::normalizer::{nfc, InputNormalizer, NoNormalization, NormalizeNfc};
-#[cfg(feature = "std")]
-pub use crate::outbuffer::IoOut;
-pub use crate::outbuffer::{FmtOut, OutBuffer};
-pub use crate::preamble::{Chunk, ChunkPreamble};
-pub use crate::profile::{PreambleNeeds, Profile, ProfileIndex};
-pub use crate::replacement_protection::{
-    BracesAroundAll, MacroNameProtection, ModeWrapper, OutputMode, ProtectInput,
-    ReplacementProtection, ReplacementProtectionHint, StandardProtection, ValueMode,
-    ValueTermination,
-};
-pub use crate::report::{EncodeReport, EncodeReporter, NoReport};
-pub use crate::rule::{
-    rule_fn, BoxError, EncodedReplacement, InvalidPrefixLength, Rule, RuleFn, RuleInput,
-    RuleResult,
-};
-pub use crate::statictable::{
-    StaticTableBinarySearch, StaticTableTwoLevelDirect, StaticTableTwoLevelLinear,
-};
 pub use crate::unknown_char::{unknown_unihex, UnknownCharPolicy};
 
+use alloc::boxed::Box;
 use alloc::string::String;
+
+/// The error type that a rule, an output buffer or a protection strategy
+/// returns when it fails. It is the boxed error type that is common in the
+/// Rust ecosystem.
+///
+/// The error type is fixed rather than a type parameter, so that no signature
+/// in this crate has an error type parameter. An error of any type converts
+/// into a `BoxError` with `?` or `.into()`. For instance, an I/O error of an
+/// output buffer is passed through unchanged, and a rule that calls a Python
+/// or JavaScript callback can store the exception of the callback, converted
+/// to a string if necessary.
+pub type BoxError = Box<dyn core::error::Error + Send + Sync + 'static>;
 
 /// The LaTeX for `text`, under every default setting.
 ///
-/// Those settings are: the builtin table [`DEFAULTS`] as the only rule,
-/// [`StandardProtection::text_mode`] around every value, [`NormalizeNfc`]
-/// over the input, [`UnknownCharPolicy::Keep`] for a character the table does
-/// not know, [`NoReport`] — what the LaTeX needs in the preamble is dropped —
-/// and a [`String`] to write into. None of those can fail, which is why this
-/// answers the string itself rather than a [`Result`].
+/// Those settings are: the default rules (see [`default_rules`]) as the only
+/// rule, [`StandardProtection::text_mode`] around every value,
+/// [`NormalizeNfc`] over the input, [`UnknownCharPolicy::Keep`] for a
+/// character the default rules do not know, [`NoReport`] — what the LaTeX
+/// needs in the preamble is dropped — and a [`String`] to write into. None of
+/// those can fail, which is why this answers the string itself rather than a
+/// [`Result`].
 ///
 /// Build an [`Encoder`] to change any of that, and in particular to learn
 /// what the output needs in the document's preamble
@@ -494,10 +577,14 @@ use alloc::string::String;
 /// // A character the builtin table has no entry for is kept as it is.
 /// assert_eq!(encode("ธ"), "ธ");
 /// ```
+///
+/// [`NoReport`]: report::NoReport
+/// [`NormalizeNfc`]: normalizer::NormalizeNfc
+/// [`StandardProtection::text_mode`]: protection::StandardProtection::text_mode
 pub fn encode(text: &str) -> String {
-    Encoder::new(&DEFAULTS).encode(text).expect(
-        "encoding with the builtin table under the default settings cannot fail: \
-         the table's lookup never fails, an unknown character is kept rather than \
+    Encoder::new(default_rules()).encode(text).expect(
+        "encoding with the default rules under the default settings cannot fail: \
+         the default rules never fail, an unknown character is kept rather than \
          refused, and a String never refuses what is written to it",
     )
 }

@@ -1,7 +1,22 @@
-//! What one encoded value may need in a document's preamble: the [`Chunk`]
-//! and the kinds of preamble it asks for ([`ChunkPreamble`]).
+//! What the encoded LaTeX needs in the preamble of the document.
+//!
+//! LaTeX code such as `\mathds{1}` only works when the document loads the
+//! package `dsfont`. This module contains the types that describe such
+//! requirements:
+//!
+//! - A [`Chunk`] is one piece of preamble under a stable identifier. It is
+//!   either a package to load or a block of declarations (see
+//!   [`ChunkPreamble`]).
+//! - A [`Profile`] is the set of chunks that one encoded value needs. A rule
+//!   returns a profile together with its encoded value.
+//! - A [`PreambleNeeds`] accumulates the chunks that a whole document needs,
+//!   and writes the corresponding preamble.
+
+mod profile;
 
 use alloc::borrow::Cow;
+
+pub use self::profile::{PreambleNeeds, Profile};
 
 /// One **preamble chunk**: a piece of preamble — a package to load, or
 /// declarations to make — that some encoded values need.
@@ -15,9 +30,8 @@ use alloc::borrow::Cow;
 ///
 /// Either way a chunk is named by a short identifier, so that a program can
 /// recognize it without parsing its text. The same identifier always means
-/// the same chunk: that is how a [`PreambleNeeds`](crate::PreambleNeeds)
-/// keeps one copy of each. A rule names the chunks of one value through a
-/// [`Profile`](crate::Profile).
+/// the same chunk: that is how a [`PreambleNeeds`] keeps one copy of each. A
+/// rule names the chunks of one value through a [`Profile`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Chunk {
     /// The chunk's identifier: a short name, which is the package's own name
@@ -35,7 +49,7 @@ impl Chunk {
     /// identifier is the package name itself.
     ///
     /// ```
-    /// use untechxt::{Chunk, ChunkPreamble};
+    /// use untechxt::preamble::{Chunk, ChunkPreamble};
     ///
     /// let chunk = Chunk::package("amssymb");
     /// assert_eq!(&*chunk.id, "amssymb");
@@ -94,8 +108,7 @@ impl Chunk {
 /// already loaded. The package name and its options are kept apart, so that a
 /// consumer with its own package machinery can merge several requests for one
 /// package into a single `\usepackage` line;
-/// [`PreambleNeeds::write_preamble`](crate::PreambleNeeds::write_preamble)
-/// itself does not merge.
+/// [`PreambleNeeds::write_preamble`] itself does not merge.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChunkPreamble {
     /// One LaTeX package, loaded with no options: `\usepackage{amssymb}`.

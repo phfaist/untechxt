@@ -1,89 +1,133 @@
-//! The builtin Unicode-to-LaTeX tables: 1549 characters with the LaTeX that
-//! prints each one, and what that LaTeX needs in the document's preamble.
+//! The builtin Unicode-to-LaTeX lookup tables.
 //!
-//! Three tables come out of the one source list:
+//! The function [`default_rules`](crate::default_rules) is the usual way to
+//! encode with the builtin data. Use the tables of this module directly when
+//! you need to look up single characters (see [`LookupTable`]), or when you
+//! assemble a [`RuleChain`](crate::rule::RuleChain) that uses only a part of
+//! the builtin data.
 //!
-//! - [`DEFAULTS`], every entry, which is what an encoder built with no
-//!   arguments uses;
-//! - [`NON_ASCII`], the entries outside ASCII alone, for output that already
-//!   is LaTeX and must keep its own `\`, `{`, `%` and `&`. It is a view of
-//!   [`DEFAULTS`] and shares its compiled data;
-//! - [`ASCII_SPECIALS`], the 13 ASCII entries alone — `"`, `#`, `$`, `%`,
-//!   `&`, `<`, `>`, `\`, `^`, `_`, `{`, `}` and `~` — for a chain that
-//!   handles the rest of the characters itself. It is a small table of its
-//!   own, compiled from the head of the same list, so that a program that
-//!   uses no other builtin table does not link the other 1536 entries.
+//! The module contains three tables, which are compiled from the same list of
+//! entries. All three tables have the type [`BuiltinTable`], and each of them
+//! is a [`Rule`].
+//!
+//! - The table [`DEFAULT_TABLE`] contains every builtin entry.
+//! - The table [`DEFAULT_TABLE_NON_ASCII`] contains the entries for non-ASCII
+//!   characters only. Use this table when the input already contains LaTeX
+//!   code, because the characters `\`, `{`, `%` and `&` of the input must then
+//!   be kept unchanged. This table shares its compiled data with
+//!   [`DEFAULT_TABLE`].
+//! - The table [`DEFAULT_TABLE_ASCII_SPECIALS`] contains the entries for ASCII
+//!   characters only. These are the few printable ASCII characters that have
+//!   a special meaning for LaTeX, such as `%`, `&` and `\`. Use this table in
+//!   a rule chain that handles all other characters with custom rules. This
+//!   table is compiled separately, so that a program that uses no other
+//!   builtin table does not link the non-ASCII entries.
 //!
 //! ```
-//! use untechxt::{Encoder, DEFAULTS};
+//! use untechxt::builtin::DEFAULT_TABLE_NON_ASCII;
+//! use untechxt::Encoder;
 //!
-//! let encoder = Encoder::new(&DEFAULTS);
-//! assert_eq!(encoder.encode("Caf\u{e9}").unwrap(), r"Caf\'e");
+//! // The input is LaTeX code already, and only `é` needs to be encoded.
+//! let encoder = Encoder::new(&DEFAULT_TABLE_NON_ASCII);
+//! assert_eq!(encoder.encode(r"\emph{Café} & more").unwrap(),
+//!            r"\emph{Caf\'e} & more");
 //! ```
 //!
-//! The data itself is [`default_table::ENTRIES`], with its provenance and the
-//! license notices that travel with it; what the entries need in the preamble
-//! is [`needs_profiles`].
+//! The entries themselves are listed in the [`default_table`] module, together
+//! with their provenance and the license notices that apply to them. The
+//! [`needs_profiles`] module lists what the entries need in the preamble of
+//! the document.
 
 pub mod default_table;
 pub mod needs_profiles;
 
 use core::fmt;
 
-use crate::asciiset::AsciiSet;
-use crate::compile_static_table;
-use crate::lookuptable::{apply_lookup, ExceptAscii, LookupTable, TableEntry};
-use crate::profile::Profile;
-use crate::rule::{Rule, RuleInput, RuleResult};
+use crate::lookuptable::{apply_lookup, LookupTable, TableEntry};
+use crate::preamble::Profile;
+use crate::rule::{AsciiSet, Rule, RuleInput, RuleResult};
 use crate::statictable::__build::Entries;
-use crate::statictable::StaticTableTwoLevelDirect;
+use crate::statictable::{compile_static_table, StaticTableTwoLevelDirect};
 
 use self::default_table::ENTRIES;
 use self::needs_profiles::PROFILES;
 
-/// The type of the builtin tables: a [`LookupTable`] and a [`Rule`] over the
-/// compiled builtin data.
+/// The type of the builtin lookup tables. A `BuiltinTable` is a
+/// [`LookupTable`] and a [`Rule`].
 ///
-/// Which static layout holds the data is an implementation detail and may
-/// change, which is why this is an opaque type of its own rather than one of
-/// the [`statictable`](crate::statictable) layouts. There are two values of
-/// it, [`DEFAULTS`] and [`ASCII_SPECIALS`]; [`NON_ASCII`] is a view of the
-/// former.
-pub struct BuiltinTable(StaticTableTwoLevelDirect);
+/// The type is opaque: how the table stores its data is an implementation
+/// detail that may change. The values of this type are the statics
+/// [`DEFAULT_TABLE`], [`DEFAULT_TABLE_NON_ASCII`] and
+/// [`DEFAULT_TABLE_ASCII_SPECIALS`]. Because the three tables have the same
+/// type, a program can choose one of them at run time:
+///
+/// ```
+/// use untechxt::builtin::{
+///     BuiltinTable, DEFAULT_TABLE, DEFAULT_TABLE_NON_ASCII,
+/// };
+/// use untechxt::Encoder;
+///
+/// let input_is_latex = true;
+/// let table: &'static BuiltinTable =
+///     if input_is_latex { &DEFAULT_TABLE_NON_ASCII } else { &DEFAULT_TABLE };
+/// let encoder = Encoder::new(table);
+/// assert_eq!(encoder.encode("Café & co").unwrap(), r"Caf\'e & co");
+/// ```
+pub struct BuiltinTable {
+    /// The compiled entries. Which static layout contains them is not part of
+    /// the API.
+    layout: StaticTableTwoLevelDirect,
+    /// Whether the table ignores the ASCII entries of `layout`. This is how
+    /// [`DEFAULT_TABLE_NON_ASCII`] shares the data of [`DEFAULT_TABLE`].
+    skip_ascii: bool,
+}
 
 impl BuiltinTable {
-    /// The number of entries in the table.
+    /// Returns the number of entries in the table.
     pub fn len(&self) -> usize {
-        self.0.len()
+        if self.skip_ascii {
+            self.layout.len() - self.layout.ascii_keys().count()
+        } else {
+            self.layout.len()
+        }
     }
 
-    /// Whether the table has no entry at all. Neither builtin table has none,
-    /// but the method is here because [`len`](BuiltinTable::len) is.
+    /// Returns whether the table contains no entry at all. No builtin table
+    /// is empty; the method exists because [`len`](BuiltinTable::len) does.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.len() == 0
     }
 
-    /// The entries of the table, in ascending order of their character.
+    /// Returns an iterator over the entries of the table, in ascending order
+    /// of their character.
     ///
     /// ```
-    /// use untechxt::DEFAULTS;
+    /// use untechxt::builtin::DEFAULT_TABLE;
     ///
-    /// let (first, entry) = DEFAULTS.iter().next().unwrap();
+    /// let (first, entry) = DEFAULT_TABLE.iter().next().unwrap();
     /// assert_eq!(first, '"');
     /// assert_eq!(entry.encoded, "''");
     /// ```
     pub fn iter(&self) -> impl Iterator<Item = (char, TableEntry<'_>)> + '_ {
-        self.0.iter()
+        let skip_ascii = self.skip_ascii;
+        self.layout.iter().filter(move |(ch, _)| !(skip_ascii && ch.is_ascii()))
     }
 }
 
 impl LookupTable for BuiltinTable {
     fn lookup(&self, ch: char) -> Option<TableEntry<'_>> {
-        self.0.lookup(ch)
+        if self.skip_ascii && ch.is_ascii() {
+            return None;
+        }
+        self.layout.lookup(ch)
     }
 
     fn ascii_keys(&self) -> AsciiSet {
-        self.0.ascii_keys()
+        if self.skip_ascii {
+            AsciiSet::EMPTY
+        } else {
+            self.layout.ascii_keys()
+        }
     }
 }
 
@@ -93,74 +137,83 @@ impl Rule for BuiltinTable {
     }
 
     fn ascii_triggers(&self) -> AsciiSet {
-        self.0.ascii_keys()
+        self.ascii_keys()
     }
 }
 
 impl fmt::Debug for BuiltinTable {
-    /// The number of entries alone: the data is far too long to print, and
-    /// the layout that holds it is not part of the API.
+    /// Prints the number of entries only. The entries are far too many to
+    /// print, and how they are stored is not part of the API.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BuiltinTable").field("len", &self.len()).finish_non_exhaustive()
     }
 }
 
-/// The builtin table: every one of the 1549 entries.
+/// The default builtin lookup table, with every builtin entry.
+///
+/// The function [`default_rules`](crate::default_rules) returns a rule that
+/// uses this table, and it is the usual way to encode with the builtin data.
 ///
 /// ```
-/// use untechxt::{DEFAULTS, LookupTable};
+/// use untechxt::builtin::DEFAULT_TABLE;
+/// use untechxt::lookuptable::LookupTable;
 ///
-/// assert_eq!(DEFAULTS.len(), 1549);
-/// assert_eq!(DEFAULTS.lookup('\u{2264}').unwrap().encoded, r"\leq");
+/// assert_eq!(DEFAULT_TABLE.lookup('\u{2264}').unwrap().encoded, r"\leq");
+/// assert_eq!(DEFAULT_TABLE.lookup('&').unwrap().encoded, r"\&");
 /// ```
-pub static DEFAULTS: BuiltinTable =
-    BuiltinTable(compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index));
+pub static DEFAULT_TABLE: BuiltinTable = BuiltinTable {
+    layout: compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index),
+    skip_ascii: false,
+};
 
-/// The builtin table without its ASCII entries: a rule that never matches at
-/// an ASCII character, and so never touches LaTeX that is already in the
-/// input.
+/// The default builtin lookup table without its entries for ASCII characters.
 ///
-/// This is what replaces pylatexenc's `non_ascii_only` flag. It is a view of
-/// [`DEFAULTS`], so it costs no second copy of the data.
+/// As a rule, this table never matches an ASCII character. It therefore keeps
+/// any LaTeX code that the input already contains unchanged. It replaces the
+/// `non_ascii_only` flag of pylatexenc. The table shares the compiled data of
+/// [`DEFAULT_TABLE`], so that a program that uses both tables contains one
+/// copy of the data.
 ///
 /// ```
-/// use untechxt::{LookupTable, NON_ASCII};
+/// use untechxt::builtin::DEFAULT_TABLE_NON_ASCII;
+/// use untechxt::lookuptable::LookupTable;
 ///
-/// assert_eq!(NON_ASCII.lookup('\u{e9}').unwrap().encoded, r"\'e");
-/// assert_eq!(NON_ASCII.lookup('&'), None);
+/// let entry = DEFAULT_TABLE_NON_ASCII.lookup('\u{e9}').unwrap();
+/// assert_eq!(entry.encoded, r"\'e");
+/// assert_eq!(DEFAULT_TABLE_NON_ASCII.lookup('&'), None);
 /// ```
-pub static NON_ASCII: ExceptAscii<&'static BuiltinTable> = ExceptAscii(&DEFAULTS);
+pub static DEFAULT_TABLE_NON_ASCII: BuiltinTable =
+    BuiltinTable { layout: DEFAULT_TABLE.layout, skip_ascii: true };
 
-/// The ASCII entries of the builtin table alone: the 13 characters `"`, `#`,
-/// `$`, `%`, `&`, `<`, `>`, `\`, `^`, `_`, `{`, `}` and `~`, which LaTeX
-/// either reserves for itself or reads differently from the way they are
-/// typed.
+/// The entries of the default builtin lookup table for ASCII characters only.
 ///
-/// It is a table of its own rather than a view of [`DEFAULTS`], compiled from
-/// the ASCII head of the same source list: a view would hold a reference to
-/// the whole of [`DEFAULTS`], and the linker would then keep all 1549 entries
-/// in a program that reads 13 of them. None of the 13 needs anything in the
-/// preamble, so the builtin profiles stay out of such a program as well. The
-/// second copy of those 13 costs about a kilobyte in a program that links
-/// both tables.
+/// These are the few printable ASCII characters that LaTeX either reserves
+/// for its own syntax, such as `\`, `{`, `%` and `&`, or typesets differently
+/// from how they are typed, such as `<` and `"`.
+///
+/// This table is compiled separately from [`DEFAULT_TABLE`], from the ASCII
+/// entries at the start of the same list. A program that uses only this table
+/// therefore links neither the non-ASCII entries nor the builtin profiles. A
+/// program that links both tables contains a second copy of the ASCII
+/// entries, which is small.
 ///
 /// ```
-/// use untechxt::{ASCII_SPECIALS, DEFAULTS, LookupTable};
+/// use untechxt::builtin::{DEFAULT_TABLE, DEFAULT_TABLE_ASCII_SPECIALS};
+/// use untechxt::lookuptable::LookupTable;
 ///
-/// assert_eq!(ASCII_SPECIALS.len(), 13);
-/// assert_eq!(ASCII_SPECIALS.lookup('&'), DEFAULTS.lookup('&'));
-/// assert_eq!(ASCII_SPECIALS.lookup('&').unwrap().encoded, r"\&");
-/// assert_eq!(ASCII_SPECIALS.lookup('\u{e9}'), None);
+/// let entry = DEFAULT_TABLE_ASCII_SPECIALS.lookup('&').unwrap();
+/// assert_eq!(entry.encoded, r"\&");
+/// assert_eq!(Some(entry), DEFAULT_TABLE.lookup('&'));
+/// assert_eq!(DEFAULT_TABLE_ASCII_SPECIALS.lookup('\u{e9}'), None);
 /// ```
-pub static ASCII_SPECIALS: BuiltinTable = BuiltinTable(compile_static_table!(
-    ascii_head(ENTRIES),
-    &ASCII_PROFILES,
-    two_level_direct_index
-));
+pub static DEFAULT_TABLE_ASCII_SPECIALS: BuiltinTable = BuiltinTable {
+    layout: compile_static_table!(ascii_head(ENTRIES), &ASCII_PROFILES, two_level_direct_index),
+    skip_ascii: false,
+};
 
-/// The profiles of [`ASCII_SPECIALS`]: index 0 alone, which needs nothing.
-/// Every ASCII entry names that one, so the small table has no use for
-/// [`PROFILES`], and a reference to it would link all of its snippets. An
+/// The profiles of [`DEFAULT_TABLE_ASCII_SPECIALS`]: index 0 alone, which needs
+/// nothing. Every ASCII entry names that one, so the small table has no use
+/// for [`PROFILES`], and a reference to it would link all of its snippets. An
 /// ASCII entry that came to name another profile would fail the index check of
 /// [`compile_static_table!`] — a compile error, and the moment to hand
 /// `&PROFILES` to the small table instead.
@@ -168,7 +221,7 @@ static ASCII_PROFILES: [Profile; 1] = [Profile::from_static(&[])];
 
 /// The entries of `entries` at ASCII characters. They are its head, since the
 /// entries are sorted by character — which [`compile_static_table!`] checks
-/// when it compiles [`DEFAULTS`].
+/// when it compiles [`DEFAULT_TABLE`].
 const fn ascii_head(entries: Entries) -> Entries {
     let mut n = 0;
     while n < entries.len() && entries[n].0.is_ascii() {

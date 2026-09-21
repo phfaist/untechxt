@@ -11,10 +11,13 @@
 //! [`Rule`] in its own right:
 //!
 //! ```
-//! use untechxt::{
-//!     compile_static_table, Chunk, Encoder, LookupTable, Profile, ProfileIndex,
-//!     StaticTableTwoLevelDirect, ValueMode,
+//! use untechxt::lookuptable::LookupTable;
+//! use untechxt::preamble::{Chunk, Profile};
+//! use untechxt::protection::ValueMode;
+//! use untechxt::statictable::{
+//!     compile_static_table, ProfileIndex, StaticTableTwoLevelDirect,
 //! };
+//! use untechxt::Encoder;
 //!
 //! static AMSSYMB_CHUNKS: [Chunk; 1] = [Chunk::package("amssymb")];
 //! static PROFILES: [Profile; 2] = [
@@ -75,96 +78,33 @@
 
 use core::fmt;
 
-use crate::asciiset::AsciiSet;
 use crate::lookuptable::{apply_lookup, LookupTable, TableEntry};
-use crate::profile::{Profile, ProfileIndex};
-use crate::replacement_protection::{ReplacementProtectionHint, ValueMode, ValueTermination};
-use crate::rule::{Rule, RuleInput, RuleResult};
+use crate::preamble::Profile;
+use crate::protection::{ReplacementProtectionHint, ValueMode, ValueTermination};
+use crate::rule::{AsciiSet, Rule, RuleInput, RuleResult};
 
-pub use crate::compile_static_table;
+use self::__build::StaticEntry;
+
+#[doc(inline)]
+pub use crate::__compile_static_table as compile_static_table;
+
+/// The number of a profile in a table's own profile array.
+///
+/// A static table stores one byte per entry rather than a profile, and turns
+/// it into a `&'static Profile` on lookup. The index is meaningful only
+/// together with the array it indexes; index 0 is reserved for "needs
+/// nothing", so that a lookup answers `None` for it without consulting the
+/// array.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
+pub struct ProfileIndex(pub u8);
+
+impl ProfileIndex {
+    /// The reserved index of the profile that needs nothing: 0.
+    pub const NONE: ProfileIndex = ProfileIndex(0);
+}
 
 /// The slot value of the direct index that means "no entry here".
 const NO_ENTRY: u16 = u16::MAX;
-
-/// The flag bit of [`StaticEntry::flags`] that marks a value ending with a
-/// named macro.
-const ENDS_WITH_NAMED_MACRO: u8 = 0b1000_0000;
-
-/// The bits of [`StaticEntry::flags`] that hold the [`ValueMode`].
-const MODE_MASK: u8 = 0b0000_0011;
-
-/// [`ValueMode::TextOnly`], as [`StaticEntry::flags`] holds it.
-const MODE_TEXT: u8 = 0;
-/// [`ValueMode::MathOnly`], as [`StaticEntry::flags`] holds it.
-const MODE_MATH: u8 = 1;
-/// [`ValueMode::AnyMode`], as [`StaticEntry::flags`] holds it.
-const MODE_ANY: u8 = 2;
-
-/// One entry of a static table, as [`compile_static_table!`] compiles it: the
-/// LaTeX, one byte of flags (the mode and the termination) and one byte of
-/// profile index.
-///
-/// The macro names this type in the `static` items it declares, which is why
-/// it is public; the packing itself is an implementation detail and is not
-/// part of the stable API.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StaticEntry {
-    /// The LaTeX that prints the character, with nothing around it.
-    encoded: &'static str,
-    /// The [`ValueMode`] in [`MODE_MASK`], plus [`ENDS_WITH_NAMED_MACRO`].
-    flags: u8,
-    /// The entry's position in the table's profile array; 0 means "needs
-    /// nothing", and the array is then never consulted.
-    profile: u8,
-}
-
-impl StaticEntry {
-    /// The filler an array of entries is built from before it is written.
-    const FILLER: StaticEntry = StaticEntry { encoded: "", flags: MODE_TEXT, profile: 0 };
-
-    /// The compiled form of one source entry. The termination is read off
-    /// `encoded` with [`ValueTermination::inspect`], at compile time.
-    const fn new(encoded: &'static str, mode: ValueMode, profile: ProfileIndex) -> Self {
-        let mode_bits = match mode {
-            ValueMode::TextOnly => MODE_TEXT,
-            ValueMode::MathOnly => MODE_MATH,
-            ValueMode::AnyMode => MODE_ANY,
-        };
-        let termination_bit = match ValueTermination::inspect(encoded) {
-            ValueTermination::ValueIsSelfTerminating => 0,
-            ValueTermination::ValueEndsWithNamedMacro => ENDS_WITH_NAMED_MACRO,
-        };
-        StaticEntry { encoded, flags: mode_bits | termination_bit, profile: profile.0 }
-    }
-
-    /// The hint the two flag bytes stand for.
-    const fn hint(&self) -> ReplacementProtectionHint {
-        let mode = match self.flags & MODE_MASK {
-            MODE_MATH => ValueMode::MathOnly,
-            MODE_ANY => ValueMode::AnyMode,
-            _ => ValueMode::TextOnly,
-        };
-        let termination = if self.flags & ENDS_WITH_NAMED_MACRO != 0 {
-            ValueTermination::ValueEndsWithNamedMacro
-        } else {
-            ValueTermination::ValueIsSelfTerminating
-        };
-        ReplacementProtectionHint::Value { mode, termination }
-    }
-
-    /// The entry as a [`LookupTable`] answers it, resolving the profile index
-    /// against `profiles`. Index 0 is `None` without consulting the array,
-    /// and an index out of its range — which the compile-time check rules
-    /// out — is `None` too rather than a panic.
-    fn view(&self, profiles: &'static [Profile]) -> TableEntry<'static> {
-        TableEntry {
-            encoded: self.encoded,
-            hint: self.hint(),
-            needs: if self.profile == 0 { None } else { profiles.get(self.profile as usize) },
-        }
-    }
-}
 
 /// A static table that finds its entry by bisecting a sorted array of the
 /// characters.
@@ -424,9 +364,89 @@ impl fmt::Debug for StaticTableTwoLevelDirect {
 #[doc(hidden)]
 pub mod __build {
     use super::{
-        AsciiSet, Profile, ProfileIndex, StaticEntry, StaticTableBinarySearch,
-        StaticTableTwoLevelDirect, StaticTableTwoLevelLinear, ValueMode, NO_ENTRY,
+        AsciiSet, Profile, ProfileIndex, ReplacementProtectionHint, StaticTableBinarySearch,
+        StaticTableTwoLevelDirect, StaticTableTwoLevelLinear, TableEntry, ValueMode,
+        ValueTermination, NO_ENTRY,
     };
+
+    /// The flag bit of [`StaticEntry::flags`] that marks a value ending with a
+    /// named macro.
+    const ENDS_WITH_NAMED_MACRO: u8 = 0b1000_0000;
+
+    /// The bits of [`StaticEntry::flags`] that hold the [`ValueMode`].
+    const MODE_MASK: u8 = 0b0000_0011;
+
+    /// [`ValueMode::TextOnly`], as [`StaticEntry::flags`] holds it.
+    const MODE_TEXT: u8 = 0;
+    /// [`ValueMode::MathOnly`], as [`StaticEntry::flags`] holds it.
+    const MODE_MATH: u8 = 1;
+    /// [`ValueMode::AnyMode`], as [`StaticEntry::flags`] holds it.
+    const MODE_ANY: u8 = 2;
+
+    /// One entry of a static table, as `compile_static_table!` compiles it: the
+    /// LaTeX, one byte of flags (the mode and the termination) and one byte of
+    /// profile index.
+    ///
+    /// The macro names this type in the `static` items it declares, which is
+    /// why it is public; the packing itself is an implementation detail and is
+    /// not part of the stable API.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct StaticEntry {
+        /// The LaTeX that prints the character, with nothing around it.
+        encoded: &'static str,
+        /// The [`ValueMode`] in [`MODE_MASK`], plus [`ENDS_WITH_NAMED_MACRO`].
+        flags: u8,
+        /// The entry's position in the table's profile array; 0 means "needs
+        /// nothing", and the array is then never consulted.
+        profile: u8,
+    }
+
+    impl StaticEntry {
+        /// The filler an array of entries is built from before it is written.
+        const FILLER: StaticEntry = StaticEntry { encoded: "", flags: MODE_TEXT, profile: 0 };
+
+        /// The compiled form of one source entry. The termination is read off
+        /// `encoded` with [`ValueTermination::inspect`], at compile time.
+        const fn new(encoded: &'static str, mode: ValueMode, profile: ProfileIndex) -> Self {
+            let mode_bits = match mode {
+                ValueMode::TextOnly => MODE_TEXT,
+                ValueMode::MathOnly => MODE_MATH,
+                ValueMode::AnyMode => MODE_ANY,
+            };
+            let termination_bit = match ValueTermination::inspect(encoded) {
+                ValueTermination::ValueIsSelfTerminating => 0,
+                ValueTermination::ValueEndsWithNamedMacro => ENDS_WITH_NAMED_MACRO,
+            };
+            StaticEntry { encoded, flags: mode_bits | termination_bit, profile: profile.0 }
+        }
+
+        /// The hint the two flag bytes stand for.
+        const fn hint(&self) -> ReplacementProtectionHint {
+            let mode = match self.flags & MODE_MASK {
+                MODE_MATH => ValueMode::MathOnly,
+                MODE_ANY => ValueMode::AnyMode,
+                _ => ValueMode::TextOnly,
+            };
+            let termination = if self.flags & ENDS_WITH_NAMED_MACRO != 0 {
+                ValueTermination::ValueEndsWithNamedMacro
+            } else {
+                ValueTermination::ValueIsSelfTerminating
+            };
+            ReplacementProtectionHint::Value { mode, termination }
+        }
+
+        /// The entry as a `LookupTable` answers it, resolving the profile
+        /// index against `profiles`. Index 0 is `None` without consulting the
+        /// array, and an index out of its range — which the compile-time
+        /// check rules out — is `None` too rather than a panic.
+        pub(super) fn view(&self, profiles: &'static [Profile]) -> TableEntry<'static> {
+            TableEntry {
+                encoded: self.encoded,
+                hint: self.hint(),
+                needs: if self.profile == 0 { None } else { profiles.get(self.profile as usize) },
+            }
+        }
+    }
 
     /// The source form of a table, as the macro receives it.
     pub type Entries = &'static [(char, &'static str, ValueMode, ProfileIndex)];
@@ -686,18 +706,22 @@ pub mod __build {
 /// listed in the [module documentation](self) are compile errors.
 ///
 /// ```
-/// use untechxt::{compile_static_table, LookupTable, Profile, ProfileIndex, ValueMode};
+/// use untechxt::lookuptable::LookupTable;
+/// use untechxt::preamble::Profile;
+/// use untechxt::protection::ValueMode;
+/// use untechxt::statictable::{compile_static_table, ProfileIndex};
 ///
 /// static PROFILES: [Profile; 1] = [Profile::from_static(&[])];
 /// const ENTRIES: &[(char, &str, ValueMode, ProfileIndex)] =
 ///     &[('\u{2014}', r"\textemdash", ValueMode::TextOnly, ProfileIndex::NONE)];
 ///
-/// static TABLE: untechxt::StaticTableBinarySearch =
+/// static TABLE: untechxt::statictable::StaticTableBinarySearch =
 ///     compile_static_table!(ENTRIES, &PROFILES, binary_search);
 /// assert_eq!(TABLE.lookup('\u{2014}').unwrap().encoded, r"\textemdash");
 /// ```
+#[doc(hidden)]
 #[macro_export]
-macro_rules! compile_static_table {
+macro_rules! __compile_static_table {
     ($entries:expr, $profiles:expr, binary_search) => {{
         const __UNTECHXT_ENTRIES: $crate::statictable::__build::Entries = $entries;
         const __UNTECHXT_N: usize = __UNTECHXT_ENTRIES.len();
@@ -706,7 +730,7 @@ macro_rules! compile_static_table {
             $crate::statictable::__build::check(__UNTECHXT_ENTRIES, __UNTECHXT_PROFILE_COUNT);
         static __UNTECHXT_KEYS: [char; __UNTECHXT_N] =
             $crate::statictable::__build::keys::<__UNTECHXT_N>(__UNTECHXT_ENTRIES);
-        static __UNTECHXT_VALUES: [$crate::statictable::StaticEntry; __UNTECHXT_N] =
+        static __UNTECHXT_VALUES: [$crate::statictable::__build::StaticEntry; __UNTECHXT_N] =
             $crate::statictable::__build::values::<__UNTECHXT_N>(__UNTECHXT_ENTRIES);
         $crate::statictable::__build::new_binary_search(
             &__UNTECHXT_KEYS,
@@ -729,7 +753,7 @@ macro_rules! compile_static_table {
             $crate::statictable::__build::starts::<{ __UNTECHXT_K + 1 }>(__UNTECHXT_ENTRIES);
         static __UNTECHXT_LOWS: [u8; __UNTECHXT_N] =
             $crate::statictable::__build::lows::<__UNTECHXT_N>(__UNTECHXT_ENTRIES);
-        static __UNTECHXT_VALUES: [$crate::statictable::StaticEntry; __UNTECHXT_N] =
+        static __UNTECHXT_VALUES: [$crate::statictable::__build::StaticEntry; __UNTECHXT_N] =
             $crate::statictable::__build::values::<__UNTECHXT_N>(__UNTECHXT_ENTRIES);
         $crate::statictable::__build::new_two_level_linear(
             &__UNTECHXT_BLOCKS,
@@ -752,7 +776,7 @@ macro_rules! compile_static_table {
             $crate::statictable::__build::blocks::<__UNTECHXT_K>(__UNTECHXT_ENTRIES);
         static __UNTECHXT_INDEX: [[u16; 256]; __UNTECHXT_K] =
             $crate::statictable::__build::direct_index::<__UNTECHXT_K>(__UNTECHXT_ENTRIES);
-        static __UNTECHXT_VALUES: [$crate::statictable::StaticEntry; __UNTECHXT_N] =
+        static __UNTECHXT_VALUES: [$crate::statictable::__build::StaticEntry; __UNTECHXT_N] =
             $crate::statictable::__build::values::<__UNTECHXT_N>(__UNTECHXT_ENTRIES);
         $crate::statictable::__build::new_two_level_direct(
             &__UNTECHXT_BLOCKS,

@@ -6,14 +6,19 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
-use untechxt::{
-    nfc, rule_fn, unknown_unihex, AsciiSet, BoxError, BracesAroundAll, Chunk, ChunkPreamble,
-    DynRuleChain, DynTable, EncodeError, EncodeReport, EncodeReporter, Encoder, ExceptAscii,
-    FmtOut, LocalDynRuleChain, LookupTable, MacroNameProtection, ModeWrapper, NoNormalization,
-    NoReport, OnlyAscii, OutBuffer, OutputMode, PreambleNeeds, Profile, ProtectInput,
-    ReplacementProtection, ReplacementProtectionHint as Hint, Rule, RuleChain, RuleInput,
-    RuleResult, StandardProtection, TableRule, UnknownCharPolicy, ValueTermination,
+use untechxt::lookuptable::{DynTable, LookupTable, TableRule};
+use untechxt::normalizer::{nfc, NoNormalization};
+use untechxt::outbuffer::{FmtOut, OutBuffer};
+use untechxt::preamble::{Chunk, ChunkPreamble, PreambleNeeds, Profile};
+use untechxt::protection::{
+    BracesAroundAll, MacroNameProtection, ModeWrapper, OutputMode, ProtectInput,
+    ReplacementProtection, ReplacementProtectionHint as Hint, StandardProtection, ValueTermination,
 };
+use untechxt::report::{EncodeReport, EncodeReporter, NoReport};
+use untechxt::rule::{
+    rule_fn, AsciiSet, DynRuleChain, LocalDynRuleChain, Rule, RuleChain, RuleInput, RuleResult,
+};
+use untechxt::{unknown_unihex, BoxError, EncodeError, Encoder, UnknownCharPolicy};
 
 // ---------------------------------------------------------------- fixtures
 
@@ -858,8 +863,8 @@ fn a_user_table_becomes_a_rule_through_table_rule() {
     #[derive(Debug)]
     struct OneEntry;
     impl LookupTable for OneEntry {
-        fn lookup(&self, ch: char) -> Option<untechxt::TableEntry<'_>> {
-            (ch == '\u{2014}').then(|| untechxt::TableEntry {
+        fn lookup(&self, ch: char) -> Option<untechxt::lookuptable::TableEntry<'_>> {
+            (ch == '\u{2014}').then(|| untechxt::lookuptable::TableEntry {
                 encoded: r"\textemdash",
                 hint: Hint::text_only(r"\textemdash"),
                 needs: Some(&AMSMATH),
@@ -874,32 +879,6 @@ fn a_user_table_becomes_a_rule_through_table_rule() {
         Encoder::new(TableRule(OneEntry)).encode_with_report("a\u{2014}").unwrap();
     assert_eq!(out, r"a{\textemdash}");
     assert_eq!(report.needs.chunks().map(|c| &*c.id).collect::<Vec<_>>(), ["amsmath"]);
-}
-
-#[test]
-fn the_ascii_and_non_ascii_views_answer_for_their_half_alone() {
-    let mut table = small_table();
-    table.insert('%', r"\%", Hint::text_only(r"\%"));
-
-    let ascii_only = OnlyAscii(&table);
-    assert_eq!(ascii_only.ascii_keys(), AsciiSet::of("%"));
-    assert!(ascii_only.lookup('%').is_some());
-    assert!(ascii_only.lookup('\u{e9}').is_none());
-    assert_eq!(Encoder::new(OnlyAscii(&table)).encode("%\u{e9}").unwrap(), "\\%\u{e9}");
-
-    // The replacement for `non_ascii_only`: it triggers on no ASCII character,
-    // so the encoder never consults it for one.
-    let non_ascii = ExceptAscii(&table);
-    assert_eq!(non_ascii.ascii_keys(), AsciiSet::EMPTY);
-    assert!(non_ascii.lookup('%').is_none());
-    assert!(non_ascii.lookup('\u{e9}').is_some());
-    assert_eq!(Encoder::new(ExceptAscii(&table)).encode("%\u{e9}").unwrap(), r"%\'e");
-
-    // A view is a table too, and so it also goes through `TableRule`.
-    assert_eq!(
-        Encoder::new(TableRule(ExceptAscii(&table))).encode("%\u{e9}").unwrap(),
-        r"%\'e"
-    );
 }
 
 // ------------------------------------------------------------------- debug
@@ -920,7 +899,7 @@ fn debug_forms_name_what_they_are() {
 #[cfg(feature = "std")]
 #[test]
 fn the_output_can_be_streamed_to_an_io_writer() {
-    use untechxt::IoOut;
+    use untechxt::outbuffer::IoOut;
 
     let mut out = IoOut(Vec::new());
     Encoder::new(small_table())

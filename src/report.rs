@@ -3,7 +3,7 @@
 
 use alloc::collections::BTreeSet;
 
-use crate::profile::{PreambleNeeds, Profile};
+use crate::preamble::{PreambleNeeds, Profile};
 
 /// What an encoding reports beyond the text it writes: what the output needs
 /// in the document's preamble, and which characters no rule knew.
@@ -52,7 +52,7 @@ impl EncodeReporter for NoReport {}
 /// kept; a caller who needs that implements [`EncodeReporter`] itself.
 ///
 /// ```
-/// use untechxt::EncodeReport;
+/// use untechxt::report::EncodeReport;
 ///
 /// let mut report = EncodeReport::new();
 /// assert!(report.needs.is_empty() && report.unknown_chars.is_empty());

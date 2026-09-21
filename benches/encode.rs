@@ -8,7 +8,7 @@
 //!
 //! Each corpus is encoded with the same 1549 builtin entries compiled in each
 //! of the three static layouts — `binary_search`, `two_level_linear` and
-//! `two_level_direct_index` — and with `DEFAULTS` itself, which adds the
+//! `two_level_direct_index` — and with `DEFAULT_TABLE` itself, which adds the
 //! `BuiltinTable` newtype around whichever layout the crate ships. Every run
 //! is text mode with `NoReport`, the encoder's defaults. Three more groups
 //! measure what the report costs (on the accented corpus, whose entries need
@@ -38,12 +38,16 @@ use criterion::{criterion_main, BenchmarkGroup, Criterion, Throughput};
 
 use untechxt::builtin::default_table::ENTRIES;
 use untechxt::builtin::needs_profiles::PROFILES;
-use untechxt::{
-    compile_static_table, Encoder, NoNormalization, Rule, StaticTableBinarySearch,
-    StaticTableTwoLevelDirect, StaticTableTwoLevelLinear, UnknownCharPolicy, DEFAULTS,
+use untechxt::builtin::DEFAULT_TABLE;
+use untechxt::normalizer::NoNormalization;
+use untechxt::rule::Rule;
+use untechxt::statictable::{
+    compile_static_table, StaticTableBinarySearch, StaticTableTwoLevelDirect,
+    StaticTableTwoLevelLinear,
 };
+use untechxt::{Encoder, UnknownCharPolicy};
 
-// The same data as `DEFAULTS`, compiled in each layout. `ENTRIES` is
+// The same data as `DEFAULT_TABLE`, compiled in each layout. `ENTRIES` is
 // `#[doc(hidden)] pub` for exactly this.
 
 static BINARY_SEARCH: StaticTableBinarySearch =
@@ -198,7 +202,7 @@ fn layouts(c: &mut Criterion) {
         bench_rule(&mut group, "binary_search", &BINARY_SEARCH, text);
         bench_rule(&mut group, "two_level_linear", &TWO_LEVEL_LINEAR, text);
         bench_rule(&mut group, "two_level_direct_index", &TWO_LEVEL_DIRECT, text);
-        bench_rule(&mut group, "defaults", &DEFAULTS, text);
+        bench_rule(&mut group, "defaults", &DEFAULT_TABLE, text);
         group.finish();
     }
 }
@@ -211,7 +215,7 @@ fn layouts(c: &mut Criterion) {
 /// Cyrillic corpus, whose letters all name a `fontenc` profile, is the one
 /// that actually records something.
 fn reporting(c: &mut Criterion) {
-    let encoder = Encoder::new(&DEFAULTS);
+    let encoder = Encoder::new(&DEFAULT_TABLE);
     for (corpus, text) in [("accented", ACCENTED), ("cyrillic", CYRILLIC)] {
         let mut group = c.benchmark_group(format!("report/{corpus}"));
         group.throughput(Throughput::Bytes(text.len() as u64));
@@ -230,8 +234,8 @@ fn reporting(c: &mut Criterion) {
 fn normalization(c: &mut Criterion) {
     let mut group = c.benchmark_group("normalization/accented");
     group.throughput(Throughput::Bytes(ACCENTED.len() as u64));
-    let nfc = Encoder::new(&DEFAULTS);
-    let raw = Encoder::new(&DEFAULTS).with_normalizer(NoNormalization);
+    let nfc = Encoder::new(&DEFAULT_TABLE);
+    let raw = Encoder::new(&DEFAULT_TABLE).with_normalizer(NoNormalization);
     group.bench_function("normalize_nfc", |b| {
         b.iter(|| black_box(nfc.encode(black_box(ACCENTED)).unwrap()));
     });

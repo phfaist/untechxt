@@ -13,13 +13,14 @@ Rust library, `no_std`, and a redesign of the `latexencode` module of
 [pylatexenc](https://github.com/phfaist/pylatexenc), by the same author.
 
 ```rust
-use untechxt::{encode, Encoder, DEFAULTS};
+use untechxt::{default_rules, encode, Encoder};
 
 // One call, every default setting.
 assert_eq!(encode("Café — naïve"), r#"Caf\'e {\textemdash} na\"ive"#);
 
 // An encoder, and what its output needs in the preamble.
-let (body, report) = Encoder::new(&DEFAULTS).encode_with_report("𝟙 and ⅓").unwrap();
+let encoder = Encoder::new(default_rules());
+let (body, report) = encoder.encode_with_report("𝟙 and ⅓").unwrap();
 assert_eq!(body, r"\ensuremath{\mathds{1}} and \nicefrac{1}{3}");
 
 let mut preamble = String::new();
@@ -60,8 +61,8 @@ Nothing in the pipeline is fixed:
 
 - **Rules.** A rule is offered a position in the input and answers with the
   LaTeX that replaces what it consumed there, or with "not mine". Rules are
-  tried in order and the first match wins, so a rule before the builtin table
-  overrides it and a rule after it fills in what the table lacks. A rule is a
+  tried in order and the first match wins, so a rule before the default rules
+  overrides them and a rule after them fills in what they lack. A rule is a
   lookup table (builtin, built at run time, or compiled from your own data at
   compile time), a closure, or any type that implements the trait — including
   one that calls into another language.

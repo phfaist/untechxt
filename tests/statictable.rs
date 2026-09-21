@@ -1,12 +1,18 @@
 //! The static table layouts (step 2): one small table compiled in each of the
 //! three layouts, checked the same way in all three.
 
-use untechxt::{
-    compile_static_table, AsciiSet, Chunk, EncodeReport, Encoder, LookupTable, Profile,
-    ProfileIndex, ReplacementProtectionHint as Hint, Rule, StandardProtection,
-    StaticTableBinarySearch, StaticTableTwoLevelDirect, StaticTableTwoLevelLinear, ValueMode,
-    ValueTermination,
+use untechxt::lookuptable::LookupTable;
+use untechxt::preamble::{Chunk, Profile};
+use untechxt::protection::{
+    ReplacementProtectionHint as Hint, StandardProtection, ValueMode, ValueTermination,
 };
+use untechxt::report::EncodeReport;
+use untechxt::rule::{AsciiSet, Rule};
+use untechxt::statictable::{
+    compile_static_table, ProfileIndex, StaticTableBinarySearch, StaticTableTwoLevelDirect,
+    StaticTableTwoLevelLinear,
+};
+use untechxt::Encoder;
 
 // ---------------------------------------------------------------- fixtures
 

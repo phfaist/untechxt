@@ -28,8 +28,8 @@
 //! document may therefore load whatever packages it likes beside these
 //! chunks: nothing here redefines a command of the kernel or of a package.
 
-use crate::preamble::Chunk;
-use crate::profile::{Profile, ProfileIndex};
+use crate::preamble::{Chunk, Profile};
+use crate::statictable::ProfileIndex;
 
 // ------------------------------------------------------------------ chunks
 //
@@ -217,10 +217,10 @@ macro_rules! builtin_profiles {
         /// The builtin profiles, one per position: the set of preamble
         /// [`Chunk`]s that the spellings carrying that position need.
         ///
-        /// Position 0 is the empty profile, so that a
-        /// [`ProfileIndex`](crate::ProfileIndex) is always a position of this
-        /// array; a table lookup answers `None` for it without reading the
-        /// array. The constants of this module name the positions.
+        /// Position 0 is the empty profile, so that a [`ProfileIndex`] is
+        /// always a position of this array; a table lookup answers `None`
+        /// for it without reading the array. The constants of this module
+        /// name the positions.
         ///
         /// ```
         /// use untechxt::builtin::needs_profiles::{AMSSYMB, PROFILES};

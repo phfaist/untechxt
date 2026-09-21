@@ -3,8 +3,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::asciiset::AsciiSet;
-use crate::rule::{Rule, RuleInput, RuleResult};
+use crate::rule::{AsciiSet, Rule, RuleInput, RuleResult};
 
 /// Several rules as one: they are tried in order at every position and the
 /// first match wins.
@@ -20,7 +19,10 @@ use crate::rule::{Rule, RuleInput, RuleResult};
 /// chain.
 ///
 /// ```
-/// use untechxt::{DynTable, Encoder, ReplacementProtectionHint, RuleChain};
+/// use untechxt::lookuptable::DynTable;
+/// use untechxt::protection::ReplacementProtectionHint;
+/// use untechxt::rule::RuleChain;
+/// use untechxt::Encoder;
 ///
 /// let mut overrides = DynTable::new();
 /// overrides.insert('%', r"\textpercent", ReplacementProtectionHint::text_only(r"\textpercent"));
@@ -191,10 +193,12 @@ fn triggers_union_of<R: Rule>(rules: &[R]) -> AsciiSet {
 /// rules that borrow nothing.
 ///
 /// ```
-/// use untechxt::{rule_fn, DynRuleChain, Encoder, ReplacementProtectionHint};
+/// use untechxt::protection::ReplacementProtectionHint;
+/// use untechxt::rule::{rule_fn, DynRuleChain};
+/// use untechxt::Encoder;
 ///
 /// let mut chain = DynRuleChain::empty();
-/// chain.push(rule_fn(|input: untechxt::RuleInput<'_>| {
+/// chain.push(rule_fn(|input: untechxt::rule::RuleInput<'_>| {
 ///     Ok((input.ch() == '&').then(|| {
 ///         input.replace_char(r"\&", ReplacementProtectionHint::text_only(r"\&"))
 ///     }))

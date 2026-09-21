@@ -289,19 +289,33 @@ math versus text mode, or of streaming output; this library adds all three.
 
 ### Tables
 
-- Builtin tables: `DEFAULTS` (all entries), `NON_ASCII`, `ASCII_SPECIALS`
-  (the 13 entries `" # $ % & < > \ ^ _ { } ~`), from one source list.
-  `NON_ASCII` is a filtered view that shares the compiled data of `DEFAULTS`;
-  `ASCII_SPECIALS` is a small table compiled by itself from the ASCII head
-  of the list.
-- The builtin tables have the opaque public type `BuiltinTable` (a newtype
-  with a private field around one of the layout structs), so the table layout
-  stays an implementation detail and can change without breaking the API.
-  The three layout structs themselves are public for users' own tables.
+- The default rules are obtained with the root function `default_rules()`,
+  which returns the opaque type `DefaultRules` (a `Rule` that is `Copy`,
+  `Send` and `Sync`, applied without dynamic dispatch). It holds the builtin
+  table `DEFAULT_TABLE` today; it can become a `RuleChain` of several rules
+  later with no API change. Every member of the default rules is also
+  exported from `builtin::`, so that a variant can be assembled by hand.
+  `DefaultRules` is the default of `Encoder`'s type parameter `R`.
+- Builtin tables, in `builtin::`: `DEFAULT_TABLE` (all entries),
+  `DEFAULT_TABLE_NON_ASCII`, `DEFAULT_TABLE_ASCII_SPECIALS` (the 13 entries
+  `" # $ % & < > \ ^ _ { } ~`), from one source list.
+  `DEFAULT_TABLE_NON_ASCII` shares the compiled data of `DEFAULT_TABLE` (its
+  initializer copies the layout struct, which is a few `&'static` slices);
+  `DEFAULT_TABLE_ASCII_SPECIALS` is a small table compiled by itself from the
+  ASCII head of the list.
+- All three builtin tables have the one opaque public type `BuiltinTable`
+  (private fields: one of the layout structs, and a flag that makes the
+  table ignore its ASCII entries), so the table layout stays an
+  implementation detail and can change without breaking the API, and a
+  program can choose a builtin table at run time. The three layout structs
+  themselves are public for users' own tables. There are no public
+  ASCII-filtering views of a user's table (`OnlyAscii` / `ExceptAscii` were
+  removed in the API namespace review).
 - No cargo features for binary size: unused statics are dropped at link
-  time. The linker drops a static whole or not at all, so a view of a static
-  table links all of it; that is why `ASCII_SPECIALS` is not a view. More
-  builtin tables are anticipated (see "Open items").
+  time. The linker drops a static whole or not at all, so a table that
+  refers to another static table links all of it; that is why
+  `DEFAULT_TABLE_ASCII_SPECIALS` is compiled separately. More builtin tables
+  are anticipated (see "Open items").
 - There is no per-char lookup on the encoder (normalization and protection
   make it fragile); callers use the `encode` family on a one-char string.
   Tables offer their own `lookup(ch)`.
@@ -345,39 +359,60 @@ a runtime `Chunk::docs` string (source comments instead).
 
 ### Module layout
 
-Existing file names are kept where they fit. Every module is `pub`, and
-`lib.rs` re-exports the types of all of them at the crate root, so that both
-`untechxt::Rule` and `untechxt::rule::Rule` name the trait.
+Every public item has exactly one public path, and no concept is split
+between the crate root and a module:
+
+- The crate root holds what most programs need: `encode()`,
+  `default_rules()` with its type `DefaultRules`, `Encoder` with
+  `EncodeError`, the cross-cutting `BoxError`, and `UnknownCharPolicy` with
+  `unknown_unihex()`.
+- Everything else lives in one public module per concept, which holds the
+  trait, the shipped implementations and their supporting types together.
+- An item is defined in a private module and `pub use`d at exactly one
+  public place, or defined in the public module itself. `lib.rs` re-exports
+  nothing from a public module.
+- Implementation details are hidden: `BuiltinTable` and `DefaultRules` are
+  opaque, and what `compile_static_table!` needs to name (`StaticEntry`, the
+  `const fn` builders) sits in the `#[doc(hidden)]` module
+  `statictable::__build`. The macro is exported at the root under the hidden
+  name `__compile_static_table` (`#[macro_export]` forces the root) and is
+  documented only as `statictable::compile_static_table!`.
 
 ```
 src/
-  lib.rs                     crate docs, re-exports, free fn encode()
-  rule.rs                    Rule, RuleInput, EncodedReplacement, RuleResult,
-                             BoxError, InvalidPrefixLength, rule_fn / RuleFn,
+  lib.rs                     crate docs, BoxError, free fn encode(), root
+                             re-exports of the private modules below
+  defaults.rs     (private)  default_rules(), DefaultRules
+  encoder.rs      (private)  Encoder<R, P, N>, EncodeError
+  unknown_char.rs (private)  UnknownCharPolicy, unknown_unihex
+  rule/
+    mod.rs                   Rule, RuleInput, EncodedReplacement, RuleResult,
+                             InvalidPrefixLength, rule_fn / RuleFn,
                              forwarding impls (&R, Box<R>, Option<R>)
-  chain.rs                   RuleChain<L>, sealed RuleList, DynRuleChain,
-                             LocalDynRuleChain
-  replacement_protection.rs  hint types, ReplacementProtection, ProtectInput,
-                             StandardProtection, MacroNameProtection,
-                             OutputMode, ModeWrapper, BracesAroundAll
-  preamble.rs                Chunk, ChunkPreamble
-  profile.rs                 Profile, ProfileIndex, PreambleNeeds
-  report.rs                  EncodeReporter, NoReport, EncodeReport
-  outbuffer.rs               OutBuffer, FmtOut, IoOut (feature "std")
-  normalizer.rs              InputNormalizer, NormalizeNfc, NoNormalization,
-                             nfc()
-  asciiset.rs                AsciiSet
-  unknown_char.rs            UnknownCharPolicy, unknown_unihex
-  encoder.rs                 Encoder<R, P, N>, EncodeError
-  lookuptable.rs             LookupTable, TableEntry, TableRule, DynTable,
-                             OnlyAscii / ExceptAscii views
-  statictable.rs             static layouts, const-fn builders,
-                             compile_static_table!
+    chain.rs      (private)  RuleChain<L>, sealed RuleList, DynRuleChain,
+                             LocalDynRuleChain; re-exported from `rule`
+    asciiset.rs   (private)  AsciiSet; re-exported from `rule`
+  lookuptable.rs             LookupTable, TableEntry, TableRule, DynTable
+  statictable.rs             static layouts, ProfileIndex,
+                             compile_static_table!, hidden `__build`
   builtin/
-    mod.rs                   BuiltinTable, DEFAULTS, NON_ASCII, ASCII_SPECIALS
+    mod.rs                   BuiltinTable, DEFAULT_TABLE,
+                             DEFAULT_TABLE_NON_ASCII,
+                             DEFAULT_TABLE_ASCII_SPECIALS
     needs_profiles.rs        builtin chunks and profiles
     default_table.rs         the entries: hand-maintained source of truth,
                              with provenance notes and both MIT notices
+  protection.rs              hint types, ReplacementProtection, ProtectInput,
+                             StandardProtection, MacroNameProtection,
+                             OutputMode, ModeWrapper, BracesAroundAll
+  preamble/
+    mod.rs                   Chunk, ChunkPreamble
+    profile.rs    (private)  Profile, PreambleNeeds; re-exported from
+                             `preamble`
+  report.rs                  EncodeReporter, NoReport, EncodeReport
+  normalizer.rs              InputNormalizer, NormalizeNfc, NoNormalization,
+                             nfc()
+  outbuffer.rs               OutBuffer, FmtOut, IoOut (feature "std")
 tests/
   core.rs                    the core API: the rules, the chain, the
                              protection strategies, the encoder loop and what
@@ -403,8 +438,10 @@ examples/
 ### Core API sketch
 
 ```rust
-// rule.rs
+// lib.rs
 pub type BoxError = Box<dyn core::error::Error + Send + Sync + 'static>;
+
+// rule/mod.rs
 pub type RuleResult<'a> = Result<Option<EncodedReplacement<'a>>, BoxError>;
 
 pub trait Rule: Debug {
@@ -463,7 +500,7 @@ pub fn rule_fn<F>(f: F) -> RuleFn<F>
 impl<F> RuleFn<F> { pub fn with_ascii_triggers(self, set: AsciiSet) -> Self; }
 // RuleFn has a manual Debug impl that prints `RuleFn(..)`.
 
-// chain.rs
+// rule/chain.rs
 pub struct RuleChain<L> { /* rules: L; room for chain-level options */ }
 impl<L: RuleList> RuleChain<L> {
     pub const fn new(rules: L) -> Self;
@@ -477,7 +514,7 @@ pub type DynRuleChain<'r>      = RuleChain<Vec<Box<dyn Rule + Send + Sync + 'r>>
 pub type LocalDynRuleChain<'r> = RuleChain<Vec<Box<dyn Rule + 'r>>>;
 // On both aliases: empty(), push(rule) (boxes for you), with_rule(rule) -> Self.
 
-// replacement_protection.rs
+// protection.rs
 pub enum ValueMode { TextOnly, MathOnly, AnyMode }
 pub enum ValueTermination { ValueIsSelfTerminating, ValueEndsWithNamedMacro }
 impl ValueTermination { pub const fn inspect(encoded: &str) -> Self; }
@@ -560,7 +597,7 @@ pub struct NormalizeNfc;      // quick check first; borrows when already NFC
 pub struct NoNormalization;   // always borrows
 pub fn nfc(text: &str) -> Cow<'_, str>;
 
-// asciiset.rs
+// rule/asciiset.rs
 pub struct AsciiSet(u128);
 impl AsciiSet {
     pub const ALL: Self; pub const EMPTY: Self;
@@ -589,7 +626,7 @@ pub fn unknown_unihex(ch: char) -> String;
 
 // encoder.rs
 // Debug, not Clone: an UnknownCharPolicy may hold a boxed callback.
-pub struct Encoder<R, P = StandardProtection, N = NormalizeNfc> { .. }
+pub struct Encoder<R = DefaultRules, P = StandardProtection, N = NormalizeNfc> { .. }
 impl<R: Rule> Encoder<R> { pub fn new(rule: R) -> Self; }
 impl<R: Rule, P: ReplacementProtection, N: InputNormalizer> Encoder<R, P, N> {
     // The replacement is bound too, so that an encoder never holds a type
@@ -615,7 +652,11 @@ pub enum EncodeError {                        // Display + core::error::Error
     Output(BoxError),                         // out buffer or protection failed
 }
 
-// lib.rs: DEFAULTS and all default settings. Cannot fail under those.
+// defaults.rs: the default rules, as an opaque `Rule` (Copy + Send + Sync).
+pub const fn default_rules() -> DefaultRules;
+pub struct DefaultRules { /* private: &'static BuiltinTable for now */ }
+
+// lib.rs: default_rules() and all default settings. Cannot fail under those.
 pub fn encode(text: &str) -> String;
 ```
 
@@ -725,7 +766,8 @@ impl Profile {
     pub fn chunks(&self) -> &[Chunk];
     pub fn is_empty(&self) -> bool;
 }
-pub struct ProfileIndex(pub u8);   // index into a table's own profile array
+pub struct ProfileIndex(pub u8);   // in `statictable`: index into a table's own
+                                   // profile array
 impl ProfileIndex { pub const NONE: ProfileIndex; }   // the reserved 0
 pub struct PreambleNeeds { /* two Vec<Chunk>, packages and snippets */ }
 // new(), include(&Profile), merge(&PreambleNeeds), is_empty(), chunks(),
@@ -778,10 +820,6 @@ impl DynTable {                   // owns its strings and its profiles
     pub fn iter(&self) -> impl Iterator<Item = (char, TableEntry<'_>)> + '_;
     pub fn len(&self) -> usize;  pub fn is_empty(&self) -> bool;
 }
-pub struct OnlyAscii<T>(pub T);   // view: answers only for ASCII chars
-pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
-// The two views are `LookupTable` and `Rule` for any `T: LookupTable`; they
-// were written in step 1 with the rest of `lookuptable.rs`.
 ```
 
 - The crate's own table types implement `Rule` directly (one lookup on
@@ -791,15 +829,18 @@ pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
   implemented for `&T`.
 - The crate's table types offer `iter()` over `(char, TableEntry)` in key
   order (used by the tests, and useful for tooling).
-- `pub static DEFAULTS: BuiltinTable`;
-  `pub static NON_ASCII: ExceptAscii<&'static BuiltinTable>`;
-  `pub static ASCII_SPECIALS: BuiltinTable`. `NON_ASCII` holds a reference to
-  the `DEFAULTS` static and shares its copy of the data; `ExceptAscii`
-  reports `AsciiSet::EMPTY` as its triggers. `ASCII_SPECIALS` is compiled a
-  second time from the ASCII head of `ENTRIES`, which a `const fn` slices off
-  (the list is sorted), so the source is not repeated. It was at first the
-  view `OnlyAscii(&DEFAULTS)`, and a program that used it alone then linked
-  the whole of `DEFAULTS`: 459,824 bytes, the same as with `DEFAULTS` itself,
+- In `builtin::`: `pub static DEFAULT_TABLE: BuiltinTable`;
+  `pub static DEFAULT_TABLE_NON_ASCII: BuiltinTable`;
+  `pub static DEFAULT_TABLE_ASCII_SPECIALS: BuiltinTable`.
+  `DEFAULT_TABLE_NON_ASCII` copies the layout struct of `DEFAULT_TABLE` in
+  its initializer, so it shares the compiled data; its private `skip_ascii`
+  flag makes `lookup` return `None` for ASCII characters and makes it report
+  `AsciiSet::EMPTY` as its triggers. `DEFAULT_TABLE_ASCII_SPECIALS` is
+  compiled a second time from the ASCII head of `ENTRIES`, which a `const fn`
+  slices off (the list is sorted), so the source is not repeated. It was at
+  first a filtering view that held a reference to the full table, and a
+  program that used it alone then linked the whole of the full table:
+  459,824 bytes, the same as with the full table itself,
   against 375,040 with a hand-written table of the 13 entries (the program of
   `examples/size_check.rs`, release, LTO). Its profile array is a one-element
   array of its own rather than `&PROFILES`, which would link every `\UnxT`
@@ -821,8 +862,8 @@ pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
   `two_level_direct_index` for the builtin table until the benchmark decides.
   Each layout also carries the table's `ascii_keys` as a compiled `AsciiSet`,
   and offers `iter()`, `len()` and `is_empty()`. The compiled payload is the
-  public but `#[doc(hidden)]` `StaticEntry`, which the macro has to name in
-  the `static` items it declares.
+  public `StaticEntry` of the `#[doc(hidden)]` module `statictable::__build`,
+  which the macro has to name in the `static` items it declares.
 - Macro input stays a plain `const` slice passed as an expression (a
   1549-entry token list would strain `macro_rules!`):
 
@@ -831,8 +872,10 @@ pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
       ('\u{00E9}', r"\'e",    TEXT, BUILTINS), // LATIN SMALL LETTER E WITH ACUTE
       ('\u{03B1}', r"\alpha", MATH, BUILTINS), // GREEK SMALL LETTER ALPHA
   ];
-  pub static DEFAULTS: BuiltinTable =
-      BuiltinTable(compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index));
+  pub static DEFAULT_TABLE: BuiltinTable = BuiltinTable {
+      layout: compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index),
+      skip_ascii: false,
+  };
   ```
   The profile argument is a `&'static [Profile]`: a `const` of that type, or
   `&PROFILES` for a `static PROFILES: [Profile; N]`. A `const` cannot hold a
@@ -902,7 +945,8 @@ hand-maintained source of truth.
   intended: the old names stay visible next to the old suite.
   - `basic_1_non_ascii_only_braces_all`,
     `basic_2c_ascii_specials_untouched_with_non_ascii_only`: use the
-    `NON_ASCII` table instead of a `non_ascii_only` flag; `braces-all`
+    `DEFAULT_TABLE_NON_ASCII` table instead of a `non_ascii_only` flag;
+    `braces-all`
     becomes `BracesAroundAll`.
   - `basic_2_*`: `BracesAfter`. `basic_2b_protection_none`: `NoProtection`.
   - `basic_custom_protection_applies_to_every_spelling`: a custom
@@ -956,7 +1000,8 @@ hand-maintained source of truth.
   `braces-almost-all`: `DoNotProtect` as is; otherwise compute the text-mode
   rendering (`mode_wrapper_for` on `StandardProtection::text_mode()`) and
   wrap it in braces if it is non-empty and starts with a backslash. Encode
-  with `DEFAULTS`, `NormalizeNfc`, and `UnknownCharPolicy::Fail`, rebuilding
+  with `default_rules()`, `NormalizeNfc`, and `UnknownCharPolicy::Fail`,
+  rebuilding
   each input line with `"0x%04X %-50s    |%s|\n"` exactly as the old test
   does. Output must be byte-identical to the golden. This validates the data
   migration, the mode wrapping, NFC, and the encoder loop in one go.
@@ -985,18 +1030,28 @@ hand-maintained source of truth.
    and the encoder. Unit tests against a tiny `DynTable`. This step settles
    the core signatures; update the plan where Rust disagrees.
 2. The static layouts, `compile_static_table!` with its compile-time checks,
-   and `iter()` on them. (`DynTable::iter()` and the `OnlyAscii` /
-   `ExceptAscii` views were written in step 1.) Tests on a small table in
-   each layout.
+   and `iter()` on them. (`DynTable::iter()` was written in step 1, with
+   the `OnlyAscii` / `ExceptAscii` views that step 7 removed.) Tests on a
+   small table in each layout.
 3. Data migration (script, builtin chunks and profiles, `BuiltinTable`,
-   `DEFAULTS`, `NON_ASCII`, `ASCII_SPECIALS`, module docs with provenance and
-   licenses, the golden directory).
+   the three builtin tables — then named `DEFAULTS`, `NON_ASCII` and
+   `ASCII_SPECIALS` — module docs with provenance and licenses, the golden
+   directory).
 4. Port the test suite and the golden test.
 5. The free `encode()`, crate-level docs, `README.md`, and the crate's own
    license files `LICENSE-MIT` and `LICENSE-APACHE` (`Cargo.toml` declares
    `MIT OR Apache-2.0`).
 6. Benchmarks, table layout decision, `cargo asm` / `cargo bloat` checks.
-7. Later, outside this plan: `unicode-xml` table generator; language
+7. API namespace review: one public path per item and no concept split
+   between the root and a module (see "Module layout"); `default_rules()` /
+   `DefaultRules` as the way to name the defaults; the builtin tables renamed
+   `DEFAULT_TABLE*` and moved to `builtin::`, all three of the one opaque
+   type `BuiltinTable`; the `OnlyAscii` / `ExceptAscii` views removed;
+   `StaticEntry` and the macro's root name hidden. A `rule_chain!` macro was
+   considered and left out: it cannot flatten chains (a macro sees tokens,
+   not types, and nesting is semantically the same as a flat chain), and
+   string names for the defaults belong to run-time configuration.
+8. Later, outside this plan: `unicode-xml` table generator; language
    bindings.
 
 ## Open items
@@ -1012,7 +1067,8 @@ hand-maintained source of truth.
   `UnknownCharPolicy::Keep`. Numbers are the smallest of three criterion runs
   pinned to one core on an otherwise idle machine (single runs drift by up to
   25% there, which is why the minimum is taken), as time for the whole corpus
-  and throughput in MiB/s; the last column is `DEFAULTS` itself, the same
+  and throughput in MiB/s; the last column is `DEFAULT_TABLE` itself (named
+  `DEFAULTS` at the time), the same
   layout seen through `BuiltinTable`, and it agrees with the third column
   inside the noise:
 

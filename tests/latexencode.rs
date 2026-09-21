@@ -31,22 +31,31 @@ use std::sync::Arc;
 
 use untechxt::builtin::default_table::ENTRIES;
 use untechxt::builtin::needs_profiles::PROFILES;
+use untechxt::builtin::{DEFAULT_TABLE, DEFAULT_TABLE_NON_ASCII};
+use untechxt::lookuptable::{DynTable, LookupTable};
+use untechxt::normalizer::nfc;
+use untechxt::outbuffer::OutBuffer;
+use untechxt::preamble::{Chunk, ChunkPreamble, PreambleNeeds, Profile};
+use untechxt::protection::{
+    BracesAroundAll, MacroNameProtection, ProtectInput, ReplacementProtection,
+    ReplacementProtectionHint as Hint, StandardProtection, ValueMode,
+};
+use untechxt::report::{EncodeReport, EncodeReporter, NoReport};
+use untechxt::rule::{rule_fn, AsciiSet, Rule, RuleChain, RuleInput, RuleResult};
+use untechxt::statictable::ProfileIndex;
 use untechxt::{
-    encode, nfc, rule_fn, unknown_unihex, AsciiSet, BoxError, BracesAroundAll, Chunk, ChunkPreamble,
-    DynTable, EncodeError, EncodeReport, EncodeReporter, Encoder, LookupTable,
-    MacroNameProtection, NoReport, OutBuffer, PreambleNeeds, Profile, ProfileIndex, ProtectInput,
-    ReplacementProtection, ReplacementProtectionHint as Hint, Rule, RuleChain, RuleInput,
-    RuleResult, StandardProtection, UnknownCharPolicy, ValueMode, DEFAULTS, NON_ASCII,
+    default_rules, encode, unknown_unihex, BoxError, DefaultRules, EncodeError, Encoder,
+    UnknownCharPolicy,
 };
 
 /// The sentence most of pylatexenc's tests encode.
 const SANTE: &str = "\"À votre santé!\" s'exclama le maître de maison à 100%.";
 
-/// The encoder of the builtin table under this crate's defaults: text-mode
+/// The encoder of the default rules under this crate's defaults: text-mode
 /// protection, NFC normalization, unknown characters kept. This is what the
 /// old suite's `Encoder::default()` and free `encode()` were.
-fn defaults() -> Encoder<&'static untechxt::BuiltinTable> {
-    Encoder::new(&DEFAULTS)
+fn defaults() -> Encoder {
+    Encoder::new(default_rules())
 }
 
 /// A reporter that keeps every unknown character with the position it was met
@@ -84,11 +93,11 @@ fn basic_0_default_encoder() {
 }
 
 /// pylatexenc `test_basic_1`: `non_ascii_only` with `braces-all`. The flag is
-/// gone: the `NON_ASCII` view of the builtin table is what leaves the ASCII
+/// gone: the builtin table `DEFAULT_TABLE_NON_ASCII` is what leaves the ASCII
 /// characters alone, and `braces-all` is the `BracesAroundAll` strategy.
 #[test]
 fn basic_1_non_ascii_only_braces_all() {
-    let u = Encoder::new(&NON_ASCII)
+    let u = Encoder::new(&DEFAULT_TABLE_NON_ASCII)
         .with_protection(BracesAroundAll(StandardProtection::text_mode()));
     assert_eq!(
         u.encode(SANTE).unwrap(),
@@ -138,11 +147,11 @@ fn basic_2b_protection_none() {
     );
 }
 
-/// pylatexenc `test_basic_2c`: with the `NON_ASCII` table in place of the
+/// pylatexenc `test_basic_2c`: with the `DEFAULT_TABLE_NON_ASCII` table in place of the
 /// `non_ascii_only` flag, the ASCII specials pass through untouched.
 #[test]
 fn basic_2c_ascii_specials_untouched_with_non_ascii_only() {
-    let u = Encoder::new(&NON_ASCII);
+    let u = Encoder::new(&DEFAULT_TABLE_NON_ASCII);
     let ascii = " \" # $ % & \\ _ { } ~ ";
     assert_eq!(u.encode(ascii).unwrap(), ascii);
 }
@@ -283,7 +292,7 @@ fn rules_00_order_of_rules() {
     let chain = RuleChain::new((
         overrides,
         rule_fn(rules_00_regex_stand_in),
-        &DEFAULTS,
+        &DEFAULT_TABLE,
         rule_fn(rules_00_callable),
     ));
     let u = Encoder::new(chain);
@@ -371,7 +380,7 @@ fn issue_no21_acronyms_through_a_callable() {
         Ok(Some(input.replace_prefix(n_bytes, braced, hint)))
     }
 
-    let u = Encoder::new(RuleChain::new((rule_fn(capitalize_acronyms), &DEFAULTS)));
+    let u = Encoder::new(RuleChain::new((rule_fn(capitalize_acronyms), &DEFAULT_TABLE)));
     assert_eq!(
         u.encode("Title with {Some} ABC acronyms LIKe this.").unwrap(),
         "Title with {Some} {ABC} acronyms {LIKe} this."
@@ -404,7 +413,7 @@ fn the_study_s_probe_string() {
 /// entry's mode, which is what the encoder writes it with.
 #[test]
 fn the_double_struck_one_is_spelled_with_mathds_and_needs_dsfont() {
-    let entry = DEFAULTS.lookup('𝟙').unwrap();
+    let entry = DEFAULT_TABLE.lookup('𝟙').unwrap();
     assert_eq!(entry.encoded, r"\mathds{1}");
     assert_eq!(entry.hint, Hint::math_only(r"\mathds{1}"));
     assert_eq!(defaults().encode("𝟙").unwrap(), r"\ensuremath{\mathds{1}}");
@@ -461,7 +470,7 @@ fn delete_character_at_the_ascii_boundary() {
     // A rule may match a control character, whatever else the chain holds.
     let mut controls = DynTable::new();
     controls.insert('\u{7f}', "DEL", Hint::any_mode("DEL"));
-    let u = Encoder::new(RuleChain::new((controls, &DEFAULTS)));
+    let u = Encoder::new(RuleChain::new((controls, &DEFAULT_TABLE)));
     assert_eq!(u.encode("a\u{7f}b").unwrap(), "aDELb");
 
     // Without such a rule it is an unknown character, and so is `\0`, while
@@ -483,7 +492,7 @@ fn per_rule_protection_overrides_the_encoder_s() {
         Ok((input.ch() == '—')
             .then(|| input.replace_char(r"\textemdash", Hint::DoNotProtect)))
     });
-    let u = Encoder::new(RuleChain::new((verbatim, &DEFAULTS)))
+    let u = Encoder::new(RuleChain::new((verbatim, &DEFAULT_TABLE)))
         .with_protection(BracesAroundAll(StandardProtection::text_mode()));
     assert_eq!(u.encode("—é").unwrap(), r"\textemdash{\'e}");
     // The same value through the table instead is braced like everything else.
@@ -517,7 +526,7 @@ fn no_rules_means_everything_non_ascii_is_unknown() {
 fn an_encoder_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
 
-    let u = Encoder::new(RuleChain::new((rule_fn(|_: RuleInput<'_>| Ok(None)), &DEFAULTS)))
+    let u = Encoder::new(RuleChain::new((rule_fn(|_: RuleInput<'_>| Ok(None)), &DEFAULT_TABLE)))
         .with_unknown_chars(UnknownCharPolicy::callback(|c| c.to_string()));
     assert_send_sync(&u);
 
@@ -576,9 +585,9 @@ impl ReplacementProtection for BracesAlmostAll {
     }
 }
 
-/// The golden's encoder: the builtin table, NFC, `braces-almost-all` and the
+/// The golden's encoder: the default rules, NFC, `braces-almost-all` and the
 /// `fail` unknown-character policy.
-fn golden_encoder() -> Encoder<&'static untechxt::BuiltinTable, BracesAlmostAll> {
+fn golden_encoder() -> Encoder<DefaultRules, BracesAlmostAll> {
     defaults()
         .with_protection(BracesAlmostAll(StandardProtection::text_mode()))
         .with_unknown_chars(UnknownCharPolicy::Fail)
@@ -670,10 +679,10 @@ fn golden_input_lines(golden: &str) -> Vec<String> {
         .map(|(cp, name)| golden_input_line(cp, name))
         .collect();
     assert!(
-        lines.len() >= DEFAULTS.len(),
+        lines.len() >= DEFAULT_TABLE.len(),
         "the golden holds {} lines for the builtin table's {} entries",
         lines.len(),
-        DEFAULTS.len()
+        DEFAULT_TABLE.len()
     );
     lines
 }
@@ -762,7 +771,7 @@ fn every_named_table_entry_is_covered_by_the_fixture() {
     .into_iter()
     .collect();
     let uncovered: BTreeSet<u32> =
-        DEFAULTS.iter().map(|(ch, _)| ch as u32).filter(|cp| !covered.contains(cp)).collect();
+        DEFAULT_TABLE.iter().map(|(ch, _)| ch as u32).filter(|cp| !covered.contains(cp)).collect();
     assert_eq!(uncovered, reserved_holes);
     // The golden also holds the printable ASCII characters and the code points
     // whose composed form is in the table (U+212B ANGSTROM SIGN).
@@ -782,15 +791,15 @@ fn every_named_table_entry_is_covered_by_the_fixture() {
 /// rather than a failing test.
 #[test]
 fn the_table_is_sorted_and_its_spellings_are_well_formed() {
-    assert_eq!(DEFAULTS.len(), 1549);
+    assert_eq!(DEFAULT_TABLE.len(), 1549);
     let mut previous: Option<char> = None;
-    for (ch, entry) in DEFAULTS.iter() {
+    for (ch, entry) in DEFAULT_TABLE.iter() {
         assert!(previous < Some(ch), "unsorted or duplicate entry at U+{:04X}", ch as u32);
         previous = Some(ch);
-        assert_eq!(DEFAULTS.lookup(ch), Some(entry), "U+{:04X}", ch as u32);
+        assert_eq!(DEFAULT_TABLE.lookup(ch), Some(entry), "U+{:04X}", ch as u32);
     }
-    assert_eq!(DEFAULTS.lookup('a'), None);
-    assert_eq!(DEFAULTS.lookup('\u{4E00}'), None);
+    assert_eq!(DEFAULT_TABLE.lookup('a'), None);
+    assert_eq!(DEFAULT_TABLE.lookup('\u{4E00}'), None);
 }
 
 /// Every entry's lookup hands out the very profile its index names, and a
@@ -802,7 +811,7 @@ fn the_table_is_sorted_and_its_spellings_are_well_formed() {
 #[test]
 fn every_entry_names_a_profile_that_exists() {
     for &(ch, encoded, _, index) in ENTRIES {
-        let entry = DEFAULTS.lookup(ch).unwrap_or_else(|| panic!("U+{:04X}", ch as u32));
+        let entry = DEFAULT_TABLE.lookup(ch).unwrap_or_else(|| panic!("U+{:04X}", ch as u32));
         assert_eq!(entry.encoded, encoded, "U+{:04X}", ch as u32);
         match entry.needs {
             None => assert_eq!(index, ProfileIndex::NONE, "U+{:04X} {encoded}", ch as u32),
@@ -828,7 +837,7 @@ fn every_entry_names_a_profile_that_exists() {
 /// which is the entry's mode now.
 #[test]
 fn astral_plane_entries_by_code_point() {
-    let spelling = |ch: char| DEFAULTS.lookup(ch).map(|entry| entry.encoded);
+    let spelling = |ch: char| DEFAULT_TABLE.lookup(ch).map(|entry| entry.encoded);
     assert_eq!(spelling('\u{1D400}'), Some(r"\mathbf{A}"));
     assert_eq!(spelling('\u{1D49C}'), Some(r"\mathscr{A}"));
     assert_eq!(spelling('\u{1D538}'), Some(r"\mathbb{A}"));
@@ -846,7 +855,7 @@ fn astral_plane_entries_by_code_point() {
     defaults().encode_into("𝐀\u{1F600}", &mut out, &mut report).unwrap();
     assert_eq!(report.unknown, [('\u{1F600}', 4)]);
 
-    let astral = DEFAULTS.iter().filter(|(ch, _)| *ch as u32 >= 0x1D400).count();
+    let astral = DEFAULT_TABLE.iter().filter(|(ch, _)| *ch as u32 >= 0x1D400).count();
     assert_eq!(astral, 453);
 }
 
@@ -860,7 +869,7 @@ fn modes_over_the_whole_table() {
     let mut text = 0;
     let mut any = 0;
     for &(ch, encoded, mode, _) in ENTRIES {
-        let entry = DEFAULTS.lookup(ch).unwrap_or_else(|| panic!("U+{:04X}", ch as u32));
+        let entry = DEFAULT_TABLE.lookup(ch).unwrap_or_else(|| panic!("U+{:04X}", ch as u32));
         let compiled = match entry.hint {
             Hint::Value { mode, .. } => mode,
             other => panic!("U+{:04X}: a table entry is a value, not {other:?}", ch as u32),
@@ -893,7 +902,7 @@ fn modes_over_the_whole_table() {
     // The three spellings that mix text and mathematics keep their own
     // `\ensuremath{…}` and are text.
     for ch in ['\u{2109}', '\u{038F}', '\u{25AA}'] {
-        let entry = DEFAULTS.lookup(ch).unwrap();
+        let entry = DEFAULT_TABLE.lookup(ch).unwrap();
         assert_eq!(entry.hint, Hint::text_only(entry.encoded), "U+{:04X}", ch as u32);
         assert!(entry.encoded.contains("\\ensuremath{"), "U+{:04X}", ch as u32);
     }
@@ -1037,7 +1046,9 @@ fn every_profile_names_chunks_that_exist_and_no_set_appears_twice() {
 /// The identifiers of the chunks that `ch`'s spelling needs, in the order a
 /// preamble would write them.
 fn chunk_ids_of(ch: char) -> Vec<String> {
-    let entry = DEFAULTS.lookup(ch).unwrap_or_else(|| panic!("U+{:04X} is not in the table", ch as u32));
+    let entry = DEFAULT_TABLE
+        .lookup(ch)
+        .unwrap_or_else(|| panic!("U+{:04X} is not in the table", ch as u32));
     let mut needs = PreambleNeeds::new();
     if let Some(profile) = entry.needs {
         needs.include(profile);
@@ -1100,7 +1111,7 @@ fn the_corrected_entries_name_their_chunks() {
     // `\ell`, a letterlike symbol the kernel spells by itself, is not swept
     // into a correction just because it sits among the blackboard-bold and
     // black-letter capitals that need `amssymb`.
-    assert!(DEFAULTS.lookup('ℓ').unwrap().needs.is_none());
+    assert!(DEFAULT_TABLE.lookup('ℓ').unwrap().needs.is_none());
     // Every profile the table has is pinned above: one added with no character
     // to pin it fails here.
     let pinned_sets: BTreeSet<Vec<&str>> =
@@ -1117,7 +1128,7 @@ fn the_corrected_entries_name_their_chunks() {
 /// order was the chunk table's — and writes them as `\usepackage` lines.
 #[test]
 fn a_set_of_needs_unions_profiles_and_keeps_the_table_s_order() {
-    let profile_of = |ch: char| DEFAULTS.lookup(ch).unwrap().needs.unwrap();
+    let profile_of = |ch: char| DEFAULT_TABLE.lookup(ch).unwrap().needs.unwrap();
 
     let mut needs = PreambleNeeds::new();
     assert!(needs.is_empty());
@@ -1188,7 +1199,7 @@ fn the_encoder_reports_what_the_text_needs() {
     // hint.
     let mut overrides = DynTable::new();
     overrides.insert('𝟙', r"\mathbbm{1}", Hint::math_only(r"\mathbbm{1}"));
-    let u = Encoder::new(RuleChain::new((overrides, &DEFAULTS)));
+    let u = Encoder::new(RuleChain::new((overrides, &DEFAULT_TABLE)));
     let (out, report) = u.encode_with_report("𝟙").unwrap();
     assert_eq!(out, r"\ensuremath{\mathbbm{1}}");
     assert!(report.needs.is_empty());
@@ -1226,7 +1237,7 @@ fn composed_borrows_composed_text_and_composes_the_rest() {
     // nothing else and stays unknown.
     assert_eq!(defaults().encode("e\u{301}").unwrap(), r"\'e");
     assert_eq!(defaults().encode("\u{212B}").unwrap(), defaults().encode("\u{c5}").unwrap());
-    assert_eq!(DEFAULTS.lookup('\u{0301}'), None);
+    assert_eq!(DEFAULT_TABLE.lookup('\u{0301}'), None);
 }
 
 /// An error names the position it happened at, and repeats what it wraps.
@@ -1247,7 +1258,7 @@ fn errors_display_their_position() {
 /// The debug forms name what they are without printing the data.
 #[test]
 fn debug_forms_name_the_kinds() {
-    let chain = RuleChain::new((rule_fn(|_: RuleInput<'_>| Ok(None)), &DEFAULTS));
+    let chain = RuleChain::new((rule_fn(|_: RuleInput<'_>| Ok(None)), &DEFAULT_TABLE));
     let shown = format!("{chain:?}");
     assert!(shown.starts_with("RuleChain { rules: (RuleFn(..), BuiltinTable"), "{shown}");
     assert_eq!(format!("{:?}", UnknownCharPolicy::callback(unknown_unihex)), "Callback(..)");
@@ -1279,22 +1290,23 @@ impl<R: Rule> Rule for TriggersEverywhere<R> {
 #[test]
 fn the_ascii_triggers_of_the_builtin_table_change_nothing_but_the_speed() {
     let corpus = golden_input_lines(&golden_text()).concat();
-    assert!(!DEFAULTS.ascii_keys().is_empty());
+    assert!(!DEFAULT_TABLE.ascii_keys().is_empty());
 
     let trusted = defaults();
-    let everywhere = Encoder::new(TriggersEverywhere(&DEFAULTS));
+    let everywhere = Encoder::new(TriggersEverywhere(&DEFAULT_TABLE));
     assert_eq!(trusted.encode(&corpus).unwrap(), everywhere.encode(&corpus).unwrap());
 
     // And under the golden's own protection and chain.
     let trusted = golden_encoder().with_unknown_chars(UnknownCharPolicy::Keep);
-    let everywhere = Encoder::new(TriggersEverywhere(&DEFAULTS))
+    let everywhere = Encoder::new(TriggersEverywhere(&DEFAULT_TABLE))
         .with_protection(BracesAlmostAll(StandardProtection::text_mode()));
     assert_eq!(trusted.encode(&corpus).unwrap(), everywhere.encode(&corpus).unwrap());
 
-    // The `NON_ASCII` view promises the empty set and keeps its promise.
-    assert_eq!(NON_ASCII.ascii_keys(), AsciiSet::EMPTY);
-    let trusted = Encoder::new(&NON_ASCII);
-    let everywhere = Encoder::new(TriggersEverywhere(&NON_ASCII));
+    // The table `DEFAULT_TABLE_NON_ASCII` promises the empty set and keeps its
+    // promise.
+    assert_eq!(DEFAULT_TABLE_NON_ASCII.ascii_keys(), AsciiSet::EMPTY);
+    let trusted = Encoder::new(&DEFAULT_TABLE_NON_ASCII);
+    let everywhere = Encoder::new(TriggersEverywhere(&DEFAULT_TABLE_NON_ASCII));
     assert_eq!(trusted.encode(&corpus).unwrap(), everywhere.encode(&corpus).unwrap());
 }
 
@@ -1380,7 +1392,7 @@ fn a_run_time_profile_from_a_user_rule_reaches_the_report() {
         encoded: String::from(r"\emoji{grinning-face}"),
         profile: Profile::new(vec![Chunk::package("emoji")]),
     };
-    let u = Encoder::new(RuleChain::new((emoji, &DEFAULTS)));
+    let u = Encoder::new(RuleChain::new((emoji, &DEFAULT_TABLE)));
     let (out, report) = u.encode_with_report("\u{1F600} \u{2102}").unwrap();
     assert_eq!(out, r"\emoji{grinning-face} \ensuremath{\mathbb{C}}");
     assert_eq!(report.needs.chunks().map(|chunk| &*chunk.id).collect::<Vec<_>>(), [

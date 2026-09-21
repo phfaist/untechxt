@@ -4,14 +4,15 @@
 use alloc::string::String;
 use core::fmt;
 
-use crate::asciiset::AsciiSet;
+use crate::defaults::DefaultRules;
 use crate::normalizer::{InputNormalizer, NormalizeNfc};
 use crate::outbuffer::OutBuffer;
-use crate::profile::Profile;
-use crate::replacement_protection::{ProtectInput, ReplacementProtection, StandardProtection};
+use crate::preamble::Profile;
+use crate::protection::{ProtectInput, ReplacementProtection, StandardProtection};
 use crate::report::{EncodeReport, EncodeReporter, NoReport};
-use crate::rule::{BoxError, Rule, RuleInput};
+use crate::rule::{AsciiSet, Rule, RuleInput};
 use crate::unknown_char::UnknownCharPolicy;
+use crate::BoxError;
 
 /// The ASCII characters the encoder always stops at, whatever its rules say:
 /// every non-printable one, so that they reach the rules and then the
@@ -52,7 +53,9 @@ const ALWAYS_STOP: AsciiSet = AsciiSet::range(0x00..=0x1f).union(AsciiSet::range
 /// normalized text.
 ///
 /// ```
-/// use untechxt::{DynTable, Encoder, ReplacementProtectionHint as Hint};
+/// use untechxt::lookuptable::DynTable;
+/// use untechxt::protection::ReplacementProtectionHint as Hint;
+/// use untechxt::Encoder;
 ///
 /// let mut table = DynTable::new();
 /// table.insert('\u{e9}', r"\'e", Hint::text_only(r"\'e"));
@@ -62,12 +65,17 @@ const ALWAYS_STOP: AsciiSet = AsciiSet::range(0x00..=0x1f).union(AsciiSet::range
 /// assert_eq!(encoder.encode("Caf\u{e9} \u{2014} ok").unwrap(), r"Caf\'e {\textemdash} ok");
 /// ```
 ///
+/// The type parameters have defaults. The type `Encoder`, written with no
+/// type arguments, is the type of the encoder that
+/// `Encoder::new(default_rules())` returns (see
+/// [`default_rules`](crate::default_rules)).
+///
 /// The encoder is not [`Clone`]: an [`UnknownCharPolicy`] may hold a boxed
 /// callback, which cannot be cloned.
 #[derive(Debug)]
-pub struct Encoder<R, P = StandardProtection, N = NormalizeNfc> {
-    /// The rule tried at every position; a [`RuleChain`](crate::RuleChain)
-    /// for more than one.
+pub struct Encoder<R = DefaultRules, P = StandardProtection, N = NormalizeNfc> {
+    /// The rule tried at every position; a
+    /// [`RuleChain`](crate::rule::RuleChain) for more than one.
     rule: R,
     /// What is written around each value.
     protection: P,
@@ -267,7 +275,8 @@ const fn is_copied_as_is(ch: char) -> bool {
 /// The ways encoding can fail.
 ///
 /// ```
-/// use untechxt::{Encoder, EncodeError, RuleChain, UnknownCharPolicy};
+/// use untechxt::rule::RuleChain;
+/// use untechxt::{EncodeError, Encoder, UnknownCharPolicy};
 ///
 /// let encoder = Encoder::new(RuleChain::new(()))
 ///     .with_unknown_chars(UnknownCharPolicy::Fail);

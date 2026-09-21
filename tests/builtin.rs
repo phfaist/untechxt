@@ -7,27 +7,32 @@ use std::collections::BTreeSet;
 
 use untechxt::builtin::default_table::ENTRIES;
 use untechxt::builtin::needs_profiles::{AMSSYMB, PROFILES};
-use untechxt::{
-    ChunkPreamble, Encoder, LookupTable, Profile, ProfileIndex,
-    ReplacementProtectionHint as Hint, ValueTermination, ASCII_SPECIALS, DEFAULTS, NON_ASCII,
+use untechxt::builtin::{
+    BuiltinTable, DEFAULT_TABLE, DEFAULT_TABLE_ASCII_SPECIALS, DEFAULT_TABLE_NON_ASCII,
 };
+use untechxt::lookuptable::{DynTable, LookupTable};
+use untechxt::preamble::{ChunkPreamble, Profile};
+use untechxt::protection::{ReplacementProtectionHint as Hint, ValueTermination};
+use untechxt::rule::{Rule, RuleChain};
+use untechxt::statictable::ProfileIndex;
+use untechxt::{default_rules, encode, DefaultRules, Encoder};
 
 /// The 13 ASCII characters the builtin table has entries for.
 const ASCII_ENTRIES: &str = "\"#$%&<>\\^_{}~";
 
 #[test]
 fn the_table_holds_every_entry() {
-    assert_eq!(DEFAULTS.len(), 1549);
-    assert_eq!(DEFAULTS.len(), ENTRIES.len());
-    assert!(!DEFAULTS.is_empty());
+    assert_eq!(DEFAULT_TABLE.len(), 1549);
+    assert_eq!(DEFAULT_TABLE.len(), ENTRIES.len());
+    assert!(!DEFAULT_TABLE.is_empty());
 }
 
 #[test]
 fn lookup_agrees_with_iter_over_the_whole_table() {
     let mut seen = 0;
     let mut previous = None;
-    for (ch, entry) in DEFAULTS.iter() {
-        assert_eq!(DEFAULTS.lookup(ch), Some(entry), "{ch:?}");
+    for (ch, entry) in DEFAULT_TABLE.iter() {
+        assert_eq!(DEFAULT_TABLE.lookup(ch), Some(entry), "{ch:?}");
         assert!(previous < Some(ch), "the entries must ascend: {previous:?} then {ch:?}");
         previous = Some(ch);
         seen += 1;
@@ -37,7 +42,7 @@ fn lookup_agrees_with_iter_over_the_whole_table() {
 
 #[test]
 fn iter_yields_the_source_entries_in_order() {
-    for ((ch, entry), &(source_ch, encoded, mode, profile)) in DEFAULTS.iter().zip(ENTRIES) {
+    for ((ch, entry), &(source_ch, encoded, mode, profile)) in DEFAULT_TABLE.iter().zip(ENTRIES) {
         assert_eq!(ch, source_ch);
         assert_eq!(entry.encoded, encoded);
         // The mode is the source column, the termination is read off the
@@ -61,52 +66,85 @@ fn iter_yields_the_source_entries_in_order() {
 #[test]
 fn the_ascii_specials_are_the_thirteen_and_nothing_else() {
     for ch in ASCII_ENTRIES.chars() {
-        assert!(ASCII_SPECIALS.lookup(ch).is_some(), "{ch:?} must be an ASCII special");
+        assert!(
+            DEFAULT_TABLE_ASCII_SPECIALS.lookup(ch).is_some(),
+            "{ch:?} must be an ASCII special"
+        );
     }
     let specials: BTreeSet<char> = ASCII_ENTRIES.chars().collect();
     assert_eq!(specials.len(), 13);
     for byte in 0u8..128 {
         let ch = byte as char;
         assert_eq!(
-            ASCII_SPECIALS.lookup(ch).is_some(),
+            DEFAULT_TABLE_ASCII_SPECIALS.lookup(ch).is_some(),
             specials.contains(&ch),
-            "{ch:?} is wrongly in or out of ASCII_SPECIALS"
+            "{ch:?} is wrongly in or out of DEFAULT_TABLE_ASCII_SPECIALS"
         );
     }
-    assert_eq!(ASCII_SPECIALS.lookup('\u{e9}'), None);
+    assert_eq!(DEFAULT_TABLE_ASCII_SPECIALS.lookup('\u{e9}'), None);
 }
 
 #[test]
 fn the_ascii_specials_are_the_ascii_entries_of_the_full_table() {
     // A table compiled by itself, from the head of the same source list: it
-    // must say what `DEFAULTS` says, profile reference included.
-    assert_eq!(ASCII_SPECIALS.len(), 13);
-    assert!(!ASCII_SPECIALS.is_empty());
-    assert!(ASCII_SPECIALS.iter().eq(DEFAULTS.iter().filter(|(ch, _)| ch.is_ascii())));
+    // must say what `DEFAULT_TABLE` says, profile reference included.
+    assert_eq!(DEFAULT_TABLE_ASCII_SPECIALS.len(), 13);
+    assert!(!DEFAULT_TABLE_ASCII_SPECIALS.is_empty());
+    assert!(DEFAULT_TABLE_ASCII_SPECIALS
+        .iter()
+        .eq(DEFAULT_TABLE.iter().filter(|(ch, _)| ch.is_ascii())));
     for byte in 0u8..128 {
         let ch = byte as char;
-        assert_eq!(ASCII_SPECIALS.lookup(ch), DEFAULTS.lookup(ch), "{ch:?}");
+        assert_eq!(DEFAULT_TABLE_ASCII_SPECIALS.lookup(ch), DEFAULT_TABLE.lookup(ch), "{ch:?}");
     }
-    assert_eq!(ASCII_SPECIALS.ascii_keys(), DEFAULTS.ascii_keys());
+    assert_eq!(DEFAULT_TABLE_ASCII_SPECIALS.ascii_keys(), DEFAULT_TABLE.ascii_keys());
     // Block 0 reaches up to U+00FF, and its upper half is not ASCII.
     for code_point in 0x80u32..0x100 {
         let ch = char::from_u32(code_point).unwrap();
-        assert_eq!(ASCII_SPECIALS.lookup(ch), None, "{ch:?}");
+        assert_eq!(DEFAULT_TABLE_ASCII_SPECIALS.lookup(ch), None, "{ch:?}");
     }
 }
 
 #[test]
 fn the_non_ascii_table_answers_for_no_ascii_character() {
     for byte in 0u8..128 {
-        assert_eq!(NON_ASCII.lookup(byte as char), None, "{byte:#04x}");
+        assert_eq!(DEFAULT_TABLE_NON_ASCII.lookup(byte as char), None, "{byte:#04x}");
     }
-    assert_eq!(NON_ASCII.lookup('\u{e9}').unwrap().encoded, r"\'e");
-    assert!(NON_ASCII.ascii_keys().is_empty());
+    assert_eq!(DEFAULT_TABLE_NON_ASCII.lookup('\u{e9}').unwrap().encoded, r"\'e");
+    assert!(DEFAULT_TABLE_NON_ASCII.ascii_keys().is_empty());
+    assert!(DEFAULT_TABLE_NON_ASCII.ascii_triggers().is_empty());
+}
+
+#[test]
+fn the_non_ascii_table_is_the_full_table_without_its_ascii_entries() {
+    assert_eq!(
+        DEFAULT_TABLE_NON_ASCII.len(),
+        DEFAULT_TABLE.len() - DEFAULT_TABLE_ASCII_SPECIALS.len()
+    );
+    assert!(!DEFAULT_TABLE_NON_ASCII.is_empty());
+    assert_eq!(DEFAULT_TABLE_NON_ASCII.iter().count(), DEFAULT_TABLE_NON_ASCII.len());
+    let expected: Vec<_> = DEFAULT_TABLE.iter().filter(|(ch, _)| !ch.is_ascii()).collect();
+    assert_eq!(DEFAULT_TABLE_NON_ASCII.iter().collect::<Vec<_>>(), expected);
+    for (ch, entry) in DEFAULT_TABLE_NON_ASCII.iter() {
+        assert_eq!(DEFAULT_TABLE_NON_ASCII.lookup(ch), Some(entry), "{ch:?}");
+    }
+    // As a rule, the table leaves the LaTeX code of the input unchanged.
+    let encoder = Encoder::new(&DEFAULT_TABLE_NON_ASCII);
+    assert_eq!(encoder.encode("\\emph{Caf\u{e9}} & 100%").unwrap(), r"\emph{Caf\'e} & 100%");
+}
+
+#[test]
+fn the_three_tables_have_one_type_and_can_be_chosen_at_run_time() {
+    let tables: [&'static BuiltinTable; 3] =
+        [&DEFAULT_TABLE, &DEFAULT_TABLE_NON_ASCII, &DEFAULT_TABLE_ASCII_SPECIALS];
+    let outputs: Vec<_> =
+        tables.iter().map(|table| Encoder::new(*table).encode("\u{e9}&").unwrap()).collect();
+    assert_eq!(outputs, [r"\'e\&", r"\'e&", "\u{e9}\\&"]);
 }
 
 #[test]
 fn the_ascii_keys_of_the_full_table_are_the_thirteen() {
-    let keys = DEFAULTS.ascii_keys();
+    let keys = DEFAULT_TABLE.ascii_keys();
     for byte in 0u8..128 {
         assert_eq!(
             keys.contains(byte),
@@ -119,7 +157,7 @@ fn the_ascii_keys_of_the_full_table_are_the_thirteen() {
 
 #[test]
 fn a_line_of_text_encodes_the_way_the_entries_and_the_protection_say() {
-    let encoder = Encoder::new(&DEFAULTS);
+    let encoder = Encoder::new(&DEFAULT_TABLE);
     // `\'e` and `fi` terminate themselves; `\textemdash`, `\alpha`, `\leq`
     // and `\beta` end with a named macro, and the three math ones are wrapped
     // by `\ensuremath{…}`, which terminates them.
@@ -131,7 +169,7 @@ fn a_line_of_text_encodes_the_way_the_entries_and_the_protection_say() {
 
 #[test]
 fn what_a_character_needs_ends_up_in_the_report() {
-    let encoder = Encoder::new(&DEFAULTS);
+    let encoder = Encoder::new(&DEFAULT_TABLE);
     // U+2102 DOUBLE-STRUCK CAPITAL C is spelled `\mathbb{C}`, of `amssymb`.
     let (encoded, report) = encoder.encode_with_report("\u{2102}").unwrap();
     assert_eq!(encoded, r"\ensuremath{\mathbb{C}}");
@@ -143,7 +181,7 @@ fn what_a_character_needs_ends_up_in_the_report() {
     assert_eq!(preamble, "\\usepackage{amssymb}\n");
 
     // And the entry's own profile is the one the constant names.
-    let needs = DEFAULTS.lookup('\u{2102}').unwrap().needs.unwrap();
+    let needs = DEFAULT_TABLE.lookup('\u{2102}').unwrap().needs.unwrap();
     assert!(std::ptr::eq(needs, &PROFILES[AMSSYMB.0 as usize]));
 }
 
@@ -151,7 +189,7 @@ fn what_a_character_needs_ends_up_in_the_report() {
 fn a_snippet_profile_reports_its_package_first() {
     // U+0482 CYRILLIC THOUSANDS SIGN needs the `T2D` encoding and the symbol
     // declared out of it: the package comes before the declarations.
-    let encoder = Encoder::new(&DEFAULTS);
+    let encoder = Encoder::new(&DEFAULT_TABLE);
     let (_, report) = encoder.encode_with_report("\u{0482}").unwrap();
     let ids: Vec<&str> = report.needs.chunks().map(|chunk| &*chunk.id).collect();
     assert_eq!(ids, ["fontenc-t2d", "cyrillic-thousands"]);
@@ -218,7 +256,7 @@ fn every_unxt_command_the_entries_write_is_declared_by_the_entry_s_own_profile()
     }
 
     let mut used: BTreeSet<String> = BTreeSet::new();
-    for (ch, entry) in DEFAULTS.iter() {
+    for (ch, entry) in DEFAULT_TABLE.iter() {
         let declared = declarations(entry.needs);
         let mut rest = entry.encoded;
         while let Some(at) = rest.find("\\UnxT") {
@@ -240,7 +278,50 @@ fn every_unxt_command_the_entries_write_is_declared_by_the_entry_s_own_profile()
 
 #[test]
 fn the_debug_forms_name_the_tables() {
-    assert!(format!("{DEFAULTS:?}").starts_with("BuiltinTable { len: 1549"));
-    assert!(format!("{NON_ASCII:?}").starts_with("ExceptAscii(BuiltinTable"));
-    assert!(format!("{ASCII_SPECIALS:?}").starts_with("BuiltinTable { len: 13"));
+    assert!(format!("{DEFAULT_TABLE:?}").starts_with("BuiltinTable { len: 1549"));
+    assert!(format!("{DEFAULT_TABLE_NON_ASCII:?}").starts_with("BuiltinTable { len: 1536"));
+    assert!(format!("{DEFAULT_TABLE_ASCII_SPECIALS:?}").starts_with("BuiltinTable { len: 13"));
+}
+
+// ----------------------------------------------------------- default rules
+
+#[test]
+fn the_default_rules_encode_the_way_the_default_table_does() {
+    let text = "Caf\u{e9} \u{2014} 100% & \u{3b1} \u{2264} \u{3b2} \u{1d7d9} \u{e18}";
+    let with_rules = Encoder::new(default_rules()).encode_with_report(text).unwrap();
+    let with_table = Encoder::new(&DEFAULT_TABLE).encode_with_report(text).unwrap();
+    assert_eq!(with_rules.0, with_table.0);
+    assert_eq!(
+        with_rules.1.needs.chunks().collect::<Vec<_>>(),
+        with_table.1.needs.chunks().collect::<Vec<_>>()
+    );
+    assert_eq!(with_rules.1.unknown_chars, with_table.1.unknown_chars);
+    assert_eq!(encode(text), with_rules.0);
+    assert_eq!(default_rules().ascii_triggers(), DEFAULT_TABLE.ascii_triggers());
+}
+
+#[test]
+fn the_default_rules_are_an_opaque_copyable_thread_safe_rule() {
+    fn assert_traits<T: Rule + Copy + Send + Sync + 'static>(_: T) {}
+    assert_traits(default_rules());
+    assert_eq!(format!("{:?}", default_rules()), "DefaultRules { .. }");
+    assert!(std::mem::size_of::<DefaultRules>() <= std::mem::size_of::<usize>());
+}
+
+#[test]
+fn an_encoder_type_without_arguments_is_the_default_rules_encoder() {
+    struct Holder {
+        encoder: Encoder,
+    }
+    let holder = Holder { encoder: Encoder::new(default_rules()) };
+    let same: &Encoder<DefaultRules> = &holder.encoder;
+    assert_eq!(same.encode("\u{e9}").unwrap(), r"\'e");
+}
+
+#[test]
+fn the_default_rules_are_a_member_of_a_chain_like_any_rule() {
+    let overrides =
+        DynTable::new().with_entry('%', r"\textpercent", Hint::text_only(r"\textpercent"));
+    let encoder = Encoder::new(RuleChain::new((overrides, default_rules())));
+    assert_eq!(encoder.encode("100% \u{e9}").unwrap(), r"100{\textpercent} \'e");
 }

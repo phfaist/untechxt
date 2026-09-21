@@ -4,10 +4,9 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::asciiset::AsciiSet;
-use crate::profile::Profile;
-use crate::replacement_protection::ReplacementProtectionHint;
-use crate::rule::{Rule, RuleInput, RuleResult};
+use crate::preamble::Profile;
+use crate::protection::ReplacementProtectionHint;
+use crate::rule::{AsciiSet, Rule, RuleInput, RuleResult};
 
 /// A table that answers, for one character, the LaTeX that prints it.
 ///
@@ -57,7 +56,9 @@ pub struct TableEntry<'t> {
 /// user's.
 ///
 /// ```
-/// use untechxt::{DynTable, Encoder, ReplacementProtectionHint, TableRule};
+/// use untechxt::lookuptable::{DynTable, TableRule};
+/// use untechxt::protection::ReplacementProtectionHint;
+/// use untechxt::Encoder;
 ///
 /// let mut table = DynTable::new();
 /// table.insert('\u{2014}', r"\textemdash", ReplacementProtectionHint::text_only(r"\textemdash"));
@@ -77,64 +78,6 @@ impl<T: LookupTable> Rule for TableRule<T> {
     }
 }
 
-/// A view of a table that answers for ASCII characters alone.
-///
-/// A view holds its whole table, and a static table behind it is linked
-/// whole. The builtin `ASCII_SPECIALS` is for that reason not this view of
-/// the full builtin table, but a small table compiled by itself.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct OnlyAscii<T>(pub T);
-
-impl<T: LookupTable> LookupTable for OnlyAscii<T> {
-    fn lookup(&self, ch: char) -> Option<TableEntry<'_>> {
-        ch.is_ascii().then(|| self.0.lookup(ch)).flatten()
-    }
-
-    fn ascii_keys(&self) -> AsciiSet {
-        self.0.ascii_keys()
-    }
-}
-
-impl<T: LookupTable> Rule for OnlyAscii<T> {
-    fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a> {
-        apply_lookup(self, input)
-    }
-
-    fn ascii_triggers(&self) -> AsciiSet {
-        self.0.ascii_keys()
-    }
-}
-
-/// A view of a table that answers for characters outside ASCII alone.
-///
-/// This is what replaces pylatexenc's `non_ascii_only` flag, which silently
-/// disabled multi-character rules that start at an ASCII character: leave the
-/// ASCII entries out of the chain instead of changing how the encoder scans.
-/// It triggers on no ASCII character at all, and so the encoder copies ASCII
-/// runs without consulting it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ExceptAscii<T>(pub T);
-
-impl<T: LookupTable> LookupTable for ExceptAscii<T> {
-    fn lookup(&self, ch: char) -> Option<TableEntry<'_>> {
-        (!ch.is_ascii()).then(|| self.0.lookup(ch)).flatten()
-    }
-
-    fn ascii_keys(&self) -> AsciiSet {
-        AsciiSet::EMPTY
-    }
-}
-
-impl<T: LookupTable> Rule for ExceptAscii<T> {
-    fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a> {
-        apply_lookup(self, input)
-    }
-
-    fn ascii_triggers(&self) -> AsciiSet {
-        AsciiSet::EMPTY
-    }
-}
-
 /// A lookup table built at run time: a sorted list of entries, searched by
 /// bisection.
 ///
@@ -143,7 +86,9 @@ impl<T: LookupTable> Rule for ExceptAscii<T> {
 /// table. It owns its LaTeX and its profiles, and it is a [`Rule`] itself.
 ///
 /// ```
-/// use untechxt::{DynTable, Encoder, ReplacementProtectionHint};
+/// use untechxt::lookuptable::DynTable;
+/// use untechxt::protection::ReplacementProtectionHint;
+/// use untechxt::Encoder;
 ///
 /// let mut table = DynTable::new();
 /// table.insert('\u{3b1}', r"\alpha", ReplacementProtectionHint::math_only(r"\alpha"));

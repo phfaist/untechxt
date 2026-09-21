@@ -1,6 +1,5 @@
-//! What a value needs in the preamble: the [`Profile`] one encoded value
-//! carries, the [`ProfileIndex`] a static table stores, and the
-//! [`PreambleNeeds`] a whole document accumulates.
+//! What a value needs in the preamble: the [`Profile`] that one encoded value
+//! carries, and the [`PreambleNeeds`] that a whole document accumulates.
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
@@ -9,18 +8,21 @@ use core::fmt;
 use crate::outbuffer::OutBuffer;
 use crate::preamble::{Chunk, ChunkPreamble};
 use crate::report::EncodeReporter;
-use crate::rule::BoxError;
+use crate::BoxError;
 
 /// A **profile**: the set of [`Chunk`]s that one encoded value needs in the
 /// preamble.
 ///
 /// A rule hands one out with the value it produces
-/// ([`EncodedReplacement::with_needs`](crate::EncodedReplacement::with_needs)),
-/// as a plain reference to a profile the rule owns. There is no registry and
-/// no identifier space: tables from unrelated crates cannot clash, and a rule
-/// built at run time returns a reference to a profile it built itself. Same
-/// chunk identifier always means the same chunk, which is how
-/// [`PreambleNeeds`] unions profiles of different origins.
+/// ([`EncodedReplacement::with_needs`]), as a plain reference to a profile the
+/// rule owns. There is no registry and no identifier space: tables from
+/// unrelated crates cannot clash, and a rule built at run time returns a
+/// reference to a profile it built itself. Same chunk identifier always means
+/// the same chunk, which is how [`PreambleNeeds`] unions profiles of different
+/// origins.
+///
+/// [`EncodedReplacement::with_needs`]:
+///     crate::rule::EncodedReplacement::with_needs
 ///
 /// A profile borrows a static chunk list ([`from_static`](Profile::from_static),
 /// which static tables use) or owns one ([`new`](Profile::new)).
@@ -39,7 +41,7 @@ impl Profile {
     /// point at it.
     ///
     /// ```
-    /// use untechxt::{Chunk, Profile};
+    /// use untechxt::preamble::{Chunk, Profile};
     ///
     /// static DSFONT_CHUNKS: [Chunk; 1] = [Chunk::package("dsfont")];
     /// static DSFONT: Profile = Profile::from_static(&DSFONT_CHUNKS);
@@ -67,21 +69,6 @@ impl Profile {
     }
 }
 
-/// The number of a profile in a table's own profile array.
-///
-/// A static table stores one byte per entry rather than a profile, and turns
-/// it into a `&'static Profile` on lookup. The index is meaningful only
-/// together with the array it indexes; index 0 is reserved for "needs
-/// nothing", so that a lookup answers `None` for it without consulting the
-/// array.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
-pub struct ProfileIndex(pub u8);
-
-impl ProfileIndex {
-    /// The reserved index of the profile that needs nothing: 0.
-    pub const NONE: ProfileIndex = ProfileIndex(0);
-}
-
 /// What a document must have in its preamble because of the LaTeX written
 /// into it: a set of [`Chunk`]s, accumulated as values are encoded.
 ///
@@ -98,7 +85,7 @@ impl ProfileIndex {
 /// caller that wants the needs alone.
 ///
 /// ```
-/// use untechxt::{Chunk, PreambleNeeds, Profile};
+/// use untechxt::preamble::{Chunk, PreambleNeeds, Profile};
 ///
 /// static AMSSYMB_CHUNKS: [Chunk; 1] = [Chunk::package("amssymb")];
 /// static AMSSYMB: Profile = Profile::from_static(&AMSSYMB_CHUNKS);

@@ -15,12 +15,14 @@ use crate::outbuffer::OutBuffer;
 /// Whatever the policy says is written without protection, without a hint and
 /// without preamble needs: a policy is a last resort, and anything richer is
 /// a rule at the end of the chain. The character is reported to the
-/// [`EncodeReporter`](crate::EncodeReporter) whichever policy is in force.
+/// [`EncodeReporter`](crate::report::EncodeReporter) whichever policy is in
+/// force.
 ///
 /// The default is [`Keep`](UnknownCharPolicy::Keep).
 ///
 /// ```
-/// use untechxt::{Encoder, RuleChain, UnknownCharPolicy};
+/// use untechxt::rule::RuleChain;
+/// use untechxt::{Encoder, UnknownCharPolicy};
 ///
 /// let encoder =
 ///     Encoder::new(RuleChain::new(())).with_unknown_chars(UnknownCharPolicy::Ignore);
@@ -49,7 +51,8 @@ impl UnknownCharPolicy {
     /// The policy that writes what `f` answers for the character.
     ///
     /// ```
-    /// use untechxt::{unknown_unihex, Encoder, RuleChain, UnknownCharPolicy};
+    /// use untechxt::rule::RuleChain;
+    /// use untechxt::{unknown_unihex, Encoder, UnknownCharPolicy};
     ///
     /// let encoder = Encoder::new(RuleChain::new(()))
     ///     .with_unknown_chars(UnknownCharPolicy::callback(unknown_unihex));

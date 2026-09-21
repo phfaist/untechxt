@@ -13,10 +13,10 @@ use core::ops::{BitOr, RangeInclusive};
 ///
 /// A byte of `0x80` or more is in no set: the type describes ASCII alone.
 ///
-/// [`Rule::ascii_triggers`]: crate::Rule::ascii_triggers
+/// [`Rule::ascii_triggers`]: crate::rule::Rule::ascii_triggers
 ///
 /// ```
-/// use untechxt::AsciiSet;
+/// use untechxt::rule::AsciiSet;
 ///
 /// const SPECIALS: AsciiSet = AsciiSet::of(r"#$%&");
 /// assert!(SPECIALS.contains(b'%'));
@@ -28,8 +28,8 @@ pub struct AsciiSet(u128);
 
 impl AsciiSet {
     /// Every ASCII character, `\0` through `\x7F`. The default answer of
-    /// [`Rule::ascii_triggers`](crate::Rule::ascii_triggers): "I may match
-    /// anywhere".
+    /// [`Rule::ascii_triggers`](crate::rule::Rule::ascii_triggers): "I may
+    /// match anywhere".
     pub const ALL: Self = AsciiSet(u128::MAX);
 
     /// No character at all. The triggers of a rule that never matches at an
@@ -106,6 +106,11 @@ impl AsciiSet {
     /// Whether the set holds no character at all.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    /// The number of characters in the set.
+    pub(crate) const fn count(self) -> usize {
+        self.0.count_ones() as usize
     }
 
     /// The set with `byte` added.
