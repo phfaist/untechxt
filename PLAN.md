@@ -327,6 +327,11 @@ a runtime `Chunk::docs` string (source comments instead).
   variants (not on tuple-struct fields): `Chunk`, `ModeWrapper`,
   `StandardProtection`, `TableEntry`, `EncodeReport` need per-field docs.
 - The `Cargo.toml` changes (`name`, `[features]`) are part of step 1.
+- Step 5 adds the publication metadata to `[package]`: `description`,
+  `readme = "README.md"`, `keywords` (`latex`, `unicode`, `encoding`,
+  `text-processing`, `no-std`) and `categories` (`text-processing`,
+  `encoding`, `no-std`, all valid crates.io categories), beside the
+  `license = "MIT OR Apache-2.0"` that was already there.
 
 ### Module layout
 
