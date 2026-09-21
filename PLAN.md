@@ -235,7 +235,9 @@ math versus text mode, or of streaming output; this library adds all three.
   information.
 - `EncodeError::{UnknownChar { ch, position }, Rule { position, source },
   Output(source)}`, `#[non_exhaustive]`. On error, partial output stays in
-  the buffer and the report stays partially filled.
+  the buffer and the report stays partially filled. `Display` names the
+  position, and the two variants that wrap an error repeat its message and
+  hand it out through `Error::source`.
 - Two API tiers. Accumulating primitive:
   `encode_into(text, &mut out, &mut report)` appends to both. Pure
   conveniences: `encode(text) -> String` and
@@ -324,7 +326,9 @@ a runtime `Chunk::docs` string (source comments instead).
 
 ### Module layout
 
-Existing file names are kept where they fit.
+Existing file names are kept where they fit. Every module is `pub`, and
+`lib.rs` re-exports the types of all of them at the crate root, so that both
+`untechxt::Rule` and `untechxt::rule::Rule` name the trait.
 
 ```
 src/
@@ -398,6 +402,10 @@ impl<'s> RuleInput<'s> {
     pub fn try_replace_prefix<'a>(&self, n_bytes: usize, /* same */)
         -> Result<EncodedReplacement<'a>, InvalidPrefixLength>;
 }
+/// Display + Error; `?` boxes it into a `BoxError` by the alloc blanket impl.
+pub struct InvalidPrefixLength {
+    pub position: usize, pub n_bytes: usize, pub available: usize,
+}
 
 pub struct EncodedReplacement<'a> { /* consumed, encoded, hint, needs */ }
 impl<'a> EncodedReplacement<'a> {
@@ -410,8 +418,9 @@ impl<'a> EncodedReplacement<'a> {
 
 // A closure rule may return owned strings, literals, `&'static Profile`, or
 // slices of the input. It cannot lend out its own captures; rules that lend
-// from their own state implement `Rule` on a struct. If closure inference
-// rejects the higher-ranked bound, fall back to `-> RuleResult<'static>`.
+// from their own state implement `Rule` on a struct. (Verified on Rust 1.94:
+// closure inference accepts the higher-ranked bound, unannotated closures
+// included, so the `-> RuleResult<'static>` fallback was not needed.)
 pub fn rule_fn<F>(f: F) -> RuleFn<F>
     where F: for<'s> Fn(RuleInput<'s>) -> RuleResult<'s>;
 impl<F> RuleFn<F> { pub fn with_ascii_triggers(self, set: AsciiSet) -> Self; }
@@ -419,7 +428,10 @@ impl<F> RuleFn<F> { pub fn with_ascii_triggers(self, set: AsciiSet) -> Self; }
 
 // chain.rs
 pub struct RuleChain<L> { /* rules: L; room for chain-level options */ }
-impl<L: RuleList> RuleChain<L> { pub const fn new(rules: L) -> Self; }
+impl<L: RuleList> RuleChain<L> {
+    pub const fn new(rules: L) -> Self;
+    pub fn rules(&self) -> &L;
+}
 impl<L: RuleList + Debug> Rule for RuleChain<L> { /* first match wins;
     ascii_triggers = union over the members */ }
 // RuleList (sealed): tuples of arity 0 to 12 (the empty tuple never
@@ -448,13 +460,24 @@ pub trait ReplacementProtection: Debug {
         &self, out: &mut O, report: &mut Rep, item: ProtectInput<'_>,
     ) -> Result<(), BoxError>;
 }
-pub struct ProtectInput<'v> { /* encoded: &'v str, hint */ }  // accessors only
+pub struct ProtectInput<'v> { /* encoded: &'v str, hint */ }
+impl<'v> ProtectInput<'v> {                  // accessors, and a constructor so
+    pub const fn new(encoded: &'v str,       // that a caller can write a value
+        hint: ReplacementProtectionHint) -> Self;   // of its own through a
+    pub const fn encoded(&self) -> &'v str;         // strategy, or test one
+    pub const fn hint(&self) -> ReplacementProtectionHint;
+}
 pub enum OutputMode { TextMode, MathMode }
 pub enum MacroNameProtection { BracesAround, BracesAfter, SpaceAfterMacroName, NoProtection }
 pub struct ModeWrapper {
     pub open: Cow<'static, str>,
     pub close: Cow<'static, str>,
     pub needs: Option<&'static Profile>,     // e.g. \text{..} needs amsmath
+}
+impl ModeWrapper {                           // const, for `text_mode()` & co.
+    pub const fn new(open: &'static str, close: &'static str) -> Self;
+    pub const fn with_needs(open: &'static str, close: &'static str,
+                            needs: &'static Profile) -> Self;
 }
 pub struct StandardProtection {
     pub output_mode: OutputMode,
@@ -481,6 +504,7 @@ pub trait EncodeReporter {
 }
 pub struct NoReport;
 pub struct EncodeReport { pub needs: PreambleNeeds, pub unknown_chars: BTreeSet<char> }
+// EncodeReport::new(); Default on both.
 
 // outbuffer.rs
 pub trait OutBuffer {
@@ -510,7 +534,10 @@ impl AsciiSet {
                                                            // but not in const
     pub const fn contains(self, byte: u8) -> bool;         // false for >= 128
                                                            // (guard the shift)
+    pub const fn is_empty(self) -> bool;
 }
+// Manual Debug: `AsciiSet::ALL`, `AsciiSet::EMPTY`, or `AsciiSet("#$%&")` with
+// non-printable members as `\xNN`.
 
 // unknown_char.rs
 pub enum UnknownCharPolicy {                  // Default = Keep; manual Debug
@@ -524,6 +551,7 @@ impl UnknownCharPolicy {
 pub fn unknown_unihex(ch: char) -> String;
 
 // encoder.rs
+// Debug, not Clone: an UnknownCharPolicy may hold a boxed callback.
 pub struct Encoder<R, P = StandardProtection, N = NormalizeNfc> { .. }
 impl<R: Rule> Encoder<R> { pub fn new(rule: R) -> Self; }
 impl<R: Rule, P: ReplacementProtection, N: InputNormalizer> Encoder<R, P, N> {
@@ -647,17 +675,22 @@ impl Chunk {   // const constructors for static data
     pub const fn package_with_options(id: &'static str, name: &'static str,
                                       options: &'static str) -> Self;
     pub const fn snippet(id: &'static str, text: &'static str) -> Self;
-}
+    pub const fn is_package(&self) -> bool;  // a package chunk, not a snippet:
+}                                            // what orders `chunks()`
 pub struct Profile { /* Cow<'static, [Chunk]> */ }
 impl Profile {
     pub const fn from_static(chunks: &'static [Chunk]) -> Self;
     pub fn new(chunks: Vec<Chunk>) -> Self;
     pub fn chunks(&self) -> &[Chunk];
+    pub fn is_empty(&self) -> bool;
 }
 pub struct ProfileIndex(pub u8);   // index into a table's own profile array
-pub struct PreambleNeeds { /* distinct chunks, keyed by id */ }
+impl ProfileIndex { pub const NONE: ProfileIndex; }   // the reserved 0
+pub struct PreambleNeeds { /* two Vec<Chunk>, packages and snippets */ }
 // new(), include(&Profile), merge(&PreambleNeeds), is_empty(), chunks(),
-// write_preamble(&mut impl OutBuffer), impl EncodeReporter
+// write_preamble<O: OutBuffer + ?Sized>(&self, &mut O) -> Result<(), BoxError>,
+// impl EncodeReporter, manual Debug (the chunk ids, in order).
+// Distinctness is a linear scan over the ids: the sets are a few chunks long.
 ```
 
 - The builtin chunks and profiles are the 20 chunks and 21 profiles of
@@ -671,8 +704,11 @@ pub struct PreambleNeeds { /* distinct chunks, keyed by id */ }
   `Profile`, so that indices equal array positions; a table lookup maps
   index 0 to `None` without consulting the array.
 - `Cow` has drop glue, so `&[..]` literals of chunks are not promoted to
-  statics on their own. Define the profiles through a small macro that also
-  creates the backing statics for the chunk lists.
+  statics on their own (confirmed: `static P: Profile =
+  Profile::from_static(&[Chunk::package("x")]);` is rejected, and
+  `static C: [Chunk; 1] = ..; static P: Profile = Profile::from_static(&C);`
+  is accepted). Define the profiles through a small macro that also creates
+  the backing statics for the chunk lists.
 
 ### Tables
 
@@ -688,8 +724,20 @@ pub struct TableEntry<'t> {
 }
 pub struct TableRule<T>(pub T);   // makes any user LookupTable a Rule
 pub struct DynTable { .. }        // built at run time; sorted Vec + binary search
+impl DynTable {                   // owns its strings and its profiles
+    pub fn new() -> Self;         // also Default
+    pub fn insert(&mut self, ch: char, encoded: impl Into<String>,
+                  hint: ReplacementProtectionHint);          // replaces
+    pub fn insert_with_needs(&mut self, /* same */, needs: Profile);
+    pub fn with_entry(self, /* as insert */) -> Self;        // builder
+    pub fn lookup(&self, ch: char) -> Option<TableEntry<'_>>; // via LookupTable
+    pub fn iter(&self) -> impl Iterator<Item = (char, TableEntry<'_>)> + '_;
+    pub fn len(&self) -> usize;  pub fn is_empty(&self) -> bool;
+}
 pub struct OnlyAscii<T>(pub T);   // view: answers only for ASCII chars
 pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
+// The two views are `LookupTable` and `Rule` for any `T: LookupTable`; they
+// were written in step 1 with the rest of `lookuptable.rs`.
 ```
 
 - The crate's own table types implement `Rule` directly (one lookup on
@@ -775,6 +823,10 @@ hand-maintained source of truth.
 
 ### Tests
 
+- The tests live under `tests/`, as integration tests over the public API:
+  `tests/core.rs` (step 1) covers the rules, the chain, the protection
+  strategies, the encoder loop and what it reports; `tests/latexencode.rs`
+  (step 4) is the ported suite, with the golden test.
 - Port `initial-rust-port/tests/latexencode.rs` (39 tests) and the 9 unit
   tests at the end of `initial-rust-port/src/lib.rs` to the new API. Every
   old test has a disposition here; tests not named are ported as they are,
@@ -863,7 +915,8 @@ hand-maintained source of truth.
    and the encoder. Unit tests against a tiny `DynTable`. This step settles
    the core signatures; update the plan where Rust disagrees.
 2. The static layouts, `compile_static_table!` with its compile-time checks,
-   `iter()`, the `OnlyAscii` / `ExceptAscii` views. Tests on a small table in
+   and `iter()` on them. (`DynTable::iter()` and the `OnlyAscii` /
+   `ExceptAscii` views were written in step 1.) Tests on a small table in
    each layout.
 3. Data migration (script, builtin chunks and profiles, `BuiltinTable`,
    `DEFAULTS`, `NON_ASCII`, `ASCII_SPECIALS`, module docs with provenance and
