@@ -1,4 +1,6 @@
-//! [`UnknownCharPolicy`]: what is written for a character no rule knew.
+//! The [`UnknownCharPolicy`] enum, which decides what the encoder writes for a
+//! character that no rule matched, and the [`unknown_unihex`] helper that
+//! spells such a character out as its code point.
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -9,46 +11,68 @@ use core::fmt;
 use crate::encoder::EncodeError;
 use crate::outbuffer::OutBuffer;
 
-/// What the encoder writes for a character that no rule matched and that is
-/// not printable ASCII (`0x20..=0x7E`) or one of `\n`, `\r`, `\t`.
+/// How the encoder handles a character that no rule matched.
 ///
-/// Whatever the policy says is written without protection, without a hint and
-/// without preamble needs: a policy is a last resort, and anything richer is
-/// a rule at the end of the chain. The character is reported to the
-/// [`EncodeReporter`](crate::report::EncodeReporter) whichever policy is in
-/// force.
+/// Such a character is an *unknown character* when it is also not printable
+/// ASCII (`0x20..=0x7E`) and not one of `\n`, `\r` and `\t`. The encoder
+/// reports every unknown character to the
+/// [`EncodeReporter`](crate::report::EncodeReporter), whichever policy is in
+/// force, and the policy then determines what, if anything, is written for
+/// the character.
 ///
-/// The default is [`Keep`](UnknownCharPolicy::Keep).
+/// Whatever a policy writes goes to the output as it is, with no protection,
+/// no mode hint and no preamble needs. A policy is a last resort. For output
+/// richer than a fixed substitution, add a rule at the end of the rule chain
+/// instead of using a policy.
+///
+/// The default is [`Keep`](UnknownCharPolicy::Keep). Set another policy on an
+/// encoder with
+/// [`Encoder::with_unknown_chars`](crate::Encoder::with_unknown_chars).
 ///
 /// ```
 /// use untechxt::rule::RuleChain;
 /// use untechxt::{Encoder, UnknownCharPolicy};
 ///
-/// let encoder =
-///     Encoder::new(RuleChain::new(())).with_unknown_chars(UnknownCharPolicy::Ignore);
+/// let encoder = Encoder::new(RuleChain::new(()))
+///     .with_unknown_chars(UnknownCharPolicy::Ignore);
 /// assert_eq!(encoder.encode("a\u{e9}b").unwrap(), "ab");
 /// ```
 #[derive(Default)]
 pub enum UnknownCharPolicy {
-    /// Keep the character itself, as UTF-8. The default.
+    /// Keeps the character itself, encoded as UTF-8. This is the default.
+    /// Pick it when the output is consumed by a LaTeX setup that accepts the
+    /// character directly, such as a document with a matching input encoding
+    /// and fonts.
     #[default]
     Keep,
-    /// Write nothing at all for it.
+    /// Writes nothing for the character, dropping it from the output. Pick it
+    /// to silently discard any character that the output cannot represent.
     Ignore,
-    /// Stop with [`EncodeError::UnknownChar`].
+    /// Stops encoding and returns [`EncodeError::UnknownChar`]. Pick it to
+    /// treat an unknown character as an error instead of encoding the text
+    /// incompletely.
     Fail,
-    /// Write this fixed text for any unknown character.
+    /// Writes this fixed text for every unknown character, whatever the
+    /// character is. Pick it for a single placeholder such as `"?"`. The text
+    /// is a [`Cow`](alloc::borrow::Cow), so a `&'static str` costs no
+    /// allocation.
     ReplaceWith(Cow<'static, str>),
-    /// Write what this function answers for the character.
+    /// Writes what this function returns for the character. The function
+    /// receives the character and returns the text to write for it. Pick it
+    /// to produce output that depends on the character, for instance
+    /// [`unknown_unihex`], which spells the character out as its code point.
     ///
-    /// The bound `Send + Sync` keeps the mere existence of this variant from
-    /// making every encoder single-threaded; build one with
-    /// [`callback`](UnknownCharPolicy::callback).
+    /// The bound `Send + Sync` keeps the mere presence of this variant from
+    /// making every encoder single-threaded. Build this variant with
+    /// [`callback`](UnknownCharPolicy::callback), which boxes the function.
     Callback(Box<dyn Fn(char) -> String + Send + Sync>),
 }
 
 impl UnknownCharPolicy {
-    /// The policy that writes what `f` answers for the character.
+    /// Returns a [`Callback`](UnknownCharPolicy::Callback) policy that writes
+    /// what `f` returns for each unknown character. This boxes `f`. Pass
+    /// [`unknown_unihex`] to spell the code point out, or a function of your
+    /// own.
     ///
     /// ```
     /// use untechxt::rule::RuleChain;
@@ -65,7 +89,8 @@ impl UnknownCharPolicy {
         UnknownCharPolicy::Callback(Box::new(f))
     }
 
-    /// Writes what the policy says for `ch`, met at byte `position`.
+    /// Applies the policy to the unknown character `ch`, met at byte
+    /// `position`, and writes any resulting text to `out`.
     pub(crate) fn apply_into<O: OutBuffer>(
         &self,
         out: &mut O,
@@ -100,12 +125,12 @@ impl fmt::Debug for UnknownCharPolicy {
     }
 }
 
-/// The character's code point in typewriter type between angle brackets:
-/// `\ensuremath{\langle}\texttt{U+0E18}\ensuremath{\rangle}`, with the code
-/// point in uppercase hexadecimal, at least four digits.
+/// Spells `ch` out as its Unicode code point, in typewriter type between angle
+/// brackets. The code point is written in uppercase hexadecimal, with at least
+/// four digits.
 ///
-/// This is pylatexenc's `'unihex'` unknown-character policy; pass it to
-/// [`UnknownCharPolicy::callback`].
+/// This is pylatexenc's `'unihex'` unknown-character mode. Pass it to the
+/// [`UnknownCharPolicy::callback`] constructor to use it.
 ///
 /// ```
 /// use untechxt::unknown_unihex;

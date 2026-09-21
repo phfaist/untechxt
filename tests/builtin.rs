@@ -1,7 +1,7 @@
-//! The builtin tables (step 3): that the data compiled, that the three tables
+//! The builtin tables: that the data compiled, that the three tables
 //! hold the parts of it they claim to hold, and that an encoder over them says
 //! what a document needs. The suite ported from the initial port, with the
-//! conformance golden, comes in step 4.
+//! conformance golden, is in `latexencode.rs`.
 
 use std::collections::BTreeSet;
 

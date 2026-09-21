@@ -1,11 +1,20 @@
-//! Protection: what is written around an encoded value so that it cannot
-//! merge with the text that follows it, and so that it is valid in the mode
-//! the output is in.
+//! Replacement protection: the text a protection strategy writes around an
+//! encoded value so that the value cannot merge with the text that follows it
+//! and stays valid in the mode the output is in.
 //!
-//! A rule states what its value is through a
-//! [`ReplacementProtectionHint`]; a [`ReplacementProtection`] strategy —
-//! [`StandardProtection`] unless the caller says otherwise — turns the value
-//! and its hint into the text that is actually written.
+//! An encoded value cannot always be written to the output as it is. The value
+//! `\textasciitilde`, which encodes `~`, written just before the input `user`,
+//! would read as the single longer command name `\textasciitildeuser`; the
+//! value `\alpha`, which encodes `α`, is valid in math mode alone. Protection
+//! wraps such a value so that it composes correctly, for instance as
+//! `{\textasciitilde}` and as `\ensuremath{\alpha}`.
+//!
+//! A rule states what its value is through the [`ReplacementProtectionHint`]
+//! enum, which is the required and authoritative description of the value. The
+//! encoder's [`ReplacementProtection`] strategy then turns the value and its
+//! hint into the text that is written. The [`StandardProtection`] struct is
+//! the strategy the crate provides, and the [`BracesAroundAll`] struct is a
+//! second strategy that doubles as the worked example of writing your own.
 
 use alloc::borrow::Cow;
 
@@ -14,12 +23,12 @@ use crate::preamble::Profile;
 use crate::report::EncodeReporter;
 use crate::BoxError;
 
-/// In which of LaTeX's two modes an encoded value may be used.
+/// The LaTeX mode, or modes, in which an encoded value is valid.
 ///
-/// The mode lives here rather than in the value: a table entry holds the bare
-/// `\alpha` marked [`MathOnly`](ValueMode::MathOnly), not
-/// `\ensuremath{\alpha}`, so that a math output mode can write it as it is
-/// and a text output mode can wrap it once.
+/// The mode is recorded in the value's [`ReplacementProtectionHint`] rather
+/// than baked into the value: a table entry holds the bare `\alpha` marked
+/// [`MathOnly`](ValueMode::MathOnly), not `\ensuremath{\alpha}`, so that math
+/// output writes the value as it is and text output wraps the value once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueMode {
     /// LaTeX that is valid in text mode alone, such as `\'e` or
@@ -33,16 +42,20 @@ pub enum ValueMode {
 }
 
 /// Whether an encoded value can be followed directly by arbitrary text.
+///
+/// A protection strategy reads the termination to decide whether the value
+/// needs separating from the text that follows it, and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueTermination {
-    /// The encoded value, under a standard document parsing state (catcode
-    /// setting), will always parse correctly, whatever string succeeds it.
+    /// The encoded value parses correctly under a standard document parsing
+    /// state (catcode setting), whatever text follows it. A protection
+    /// strategy writes the value with nothing added.
     ValueIsSelfTerminating,
-    /// The encoded value ends with a macro name (for example `r"\hat\i"`). If
-    /// it is immediately followed by more content, the macro will fail to
-    /// parse correctly (`r"\hat\i"` + `"more text"` = `r"\hat\imore text"`,
-    /// incorrect). The value needs to be protected by a suitable protection
-    /// strategy, for instance by enclosing it in braces (`r"{\hat\i}"`).
+    /// The encoded value ends with a macro name, for example `\hat\i`. Text
+    /// placed directly after the value would be read as part of that macro
+    /// name: `\hat\i` followed by `more text` becomes `\hat\imore text`, which
+    /// is wrong. A protection strategy separates the value from what follows,
+    /// for instance by enclosing the value in braces (`{\hat\i}`).
     ValueEndsWithNamedMacro,
     // We might add further variants in the future...
     //
@@ -68,8 +81,10 @@ impl ValueTermination {
     ///     self, ValueEndsWithNamedMacro, ValueIsSelfTerminating,
     /// };
     ///
-    /// assert_eq!(ValueTermination::inspect(r"\textemdash"), ValueEndsWithNamedMacro);
-    /// assert_eq!(ValueTermination::inspect(r"\hat\i"), ValueEndsWithNamedMacro);
+    /// assert_eq!(ValueTermination::inspect(r"\textemdash"),
+    ///            ValueEndsWithNamedMacro);
+    /// assert_eq!(ValueTermination::inspect(r"\hat\i"),
+    ///            ValueEndsWithNamedMacro);
     /// assert_eq!(ValueTermination::inspect(r"\'e"), ValueIsSelfTerminating);
     /// assert_eq!(ValueTermination::inspect(r"\r{A}"), ValueIsSelfTerminating);
     /// assert_eq!(ValueTermination::inspect("fi"), ValueIsSelfTerminating);
@@ -89,13 +104,15 @@ impl ValueTermination {
     }
 }
 
-/// What a rule says about the value it produces, so that the protection
-/// strategy knows what to write around it.
+/// What a rule states about the value it produces, so that a protection
+/// strategy knows what to write around the value.
 ///
-/// The hint is required and authoritative: the encoder never inspects a value
-/// itself. A rule that does not know the termination of its value reads it
-/// off the value's form with one of the constructors here, which is what
-/// [`ValueTermination::inspect`] does.
+/// The hint is required and authoritative: the encoder never inspects the
+/// value itself. A rule that does not already know the termination of its
+/// value reads the termination off the value's form with one of the
+/// constructors here, such as
+/// [`text_only`](ReplacementProtectionHint::text_only), which call
+/// [`ValueTermination::inspect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ReplacementProtectionHint {
@@ -142,8 +159,8 @@ impl ReplacementProtectionHint {
     }
 }
 
-/// One encoded value on its way to the output, as a
-/// [`ReplacementProtection`] receives it.
+/// One encoded value, with its hint, as a [`ReplacementProtection`] strategy
+/// receives it for writing to the output.
 ///
 /// It is a small `Copy` struct with accessors rather than public fields, so
 /// that more context can be given to strategies later without breaking the
@@ -173,26 +190,33 @@ impl<'v> ProtectInput<'v> {
     }
 }
 
-/// How an encoded value is written to the output: what is put around it so
-/// that it survives being pasted into arbitrary text, and so that it is valid
-/// in the mode the output is in.
+/// A strategy for writing an encoded value to the output, together with
+/// whatever the strategy puts around the value so that the value cannot merge
+/// with the text that follows and stays valid in the output's mode.
 ///
-/// Protection is stateless: each value is protected as it comes, with no
-/// lookahead and no memory of what was written before.
+/// Protection is stateless: each value is protected on its own, with no
+/// lookahead and no memory of what was written before. A rule that needs to
+/// account for surrounding context must therefore settle the value and its
+/// hint itself, since the strategy sees one value at a time.
 ///
 /// The reporter is passed in because a mode wrapper may itself need something
-/// in the preamble — `\text{…}` needs amsmath.
+/// in the preamble. The wrapper `\text{…}`, for instance, needs the package
+/// amsmath.
 ///
-/// The trait has a generic method, and so it is not dyn-compatible: a fully
-/// custom strategy is a compile-time choice. [`StandardProtection`] is an
-/// ordinary struct whose fields can be set at run time, which is what
-/// language bindings need.
+/// Implement this trait to write a fully custom strategy; [`BracesAroundAll`]
+/// is such a strategy, written with public API alone. The trait has a generic
+/// method and so it is not dyn-compatible, which makes a fully custom strategy
+/// a compile-time choice. [`StandardProtection`] is an ordinary struct whose
+/// fields can be set at run time instead, which is what language bindings
+/// need.
 pub trait ReplacementProtection: core::fmt::Debug {
-    /// Writes `item` to `out`, with whatever protection the strategy applies.
+    /// Writes `item` to `out` with whatever protection the strategy applies,
+    /// and reports to `report` anything the protection itself needs in the
+    /// preamble.
     ///
     /// # Errors
     ///
-    /// Whatever `out` reports; the encoder passes it on as
+    /// Returns whatever `out` reports; the encoder passes the error on as
     /// [`EncodeError::Output`](crate::EncodeError::Output).
     fn write_protected<O: OutBuffer, Rep: EncodeReporter>(
         &self,
@@ -202,7 +226,9 @@ pub trait ReplacementProtection: core::fmt::Debug {
     ) -> Result<(), BoxError>;
 }
 
-/// Which of LaTeX's two modes the encoded output is going into.
+/// The LaTeX mode the encoded output is going into. It is the type of the
+/// [`output_mode`](StandardProtection::output_mode) field of
+/// [`StandardProtection`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum OutputMode {
     /// Ordinary document text. The default.
@@ -228,10 +254,10 @@ pub enum MacroNameProtection {
     /// Append an empty group: `\textemdash` becomes `\textemdash{}`.
     BracesAfter,
     /// Append a space: `\pm` becomes `\pm `. Safe in math mode, where spaces
-    /// are ignored, and the default there. **Unsafe in text mode**: TeX skips
+    /// are ignored, and the default there. Unsafe in text mode: TeX skips
     /// every space after a control word, so a real space that follows in the
-    /// input would be swallowed, and a stateless strategy cannot know whether
-    /// one follows.
+    /// input would be lost, and a stateless strategy cannot know whether one
+    /// follows.
     SpaceAfterMacroName,
     /// Write the value as it is, with nothing appended. Unsafe in general:
     /// `\l` before a letter is a different command. Use it when the caller
@@ -239,20 +265,24 @@ pub enum MacroNameProtection {
     NoProtection,
 }
 
-/// What is written around a value whose mode is not the output's mode:
-/// `\ensuremath{` … `}` around a math value in text output, `\text{` … `}` or
-/// the like around a text value in math output.
+/// The pair of strings written around a value whose mode is not the output's
+/// mode. [`StandardProtection`] uses `\ensuremath{` … `}` around a math value
+/// in text output, and `\textnormal{` … `}` around a text value in math
+/// output.
 ///
-/// A wrapper may itself need something in the preamble — `\text{…}` needs
-/// amsmath — which is what [`needs`](ModeWrapper::needs) states.
+/// A wrapper may itself need something in the preamble. Replacing the default
+/// `\textnormal{…}` with amsmath's `\text{…}`, for instance, requires that
+/// the document load amsmath; the [`needs`](ModeWrapper::needs) field records
+/// that requirement.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModeWrapper {
-    /// What is written before the value.
+    /// The string written before the value.
     pub open: Cow<'static, str>,
-    /// What is written after the value.
+    /// The string written after the value.
     pub close: Cow<'static, str>,
-    /// What the wrapper itself needs in the preamble, reported to the
-    /// [`EncodeReporter`] whenever the wrapper is used.
+    /// What the wrapper itself needs in the preamble, or `None` when the
+    /// wrapper needs nothing, as the default wrappers do. When the wrapper is
+    /// used, its needs are reported to the [`EncodeReporter`].
     pub needs: Option<&'static Profile>,
 }
 
@@ -287,8 +317,8 @@ impl ModeWrapper {
 ///
 /// ```
 /// use untechxt::protection::{
-///     ProtectInput, ReplacementProtection, ReplacementProtectionHint,
-///     StandardProtection,
+///     ProtectInput, ReplacementProtection,
+///     ReplacementProtectionHint as Hint, StandardProtection,
 /// };
 /// use untechxt::report::NoReport;
 ///
@@ -296,32 +326,51 @@ impl ModeWrapper {
 /// let write = |encoded: &str, hint| {
 ///     let mut out = String::new();
 ///     protection
-///         .write_protected(&mut out, &mut NoReport, ProtectInput::new(encoded, hint))
+///         .write_protected(
+///             &mut out,
+///             &mut NoReport,
+///             ProtectInput::new(encoded, hint),
+///         )
 ///         .unwrap();
 ///     out
 /// };
-/// assert_eq!(write(r"\textemdash", ReplacementProtectionHint::text_only(r"\textemdash")),
+/// assert_eq!(write(r"\textemdash", Hint::text_only(r"\textemdash")),
 ///            r"{\textemdash}");
-/// assert_eq!(write(r"\'e", ReplacementProtectionHint::text_only(r"\'e")), r"\'e");
-/// assert_eq!(write(r"\alpha", ReplacementProtectionHint::math_only(r"\alpha")),
+/// assert_eq!(write(r"\'e", Hint::text_only(r"\'e")), r"\'e");
+/// assert_eq!(write(r"\alpha", Hint::math_only(r"\alpha")),
 ///            r"\ensuremath{\alpha}");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StandardProtection {
-    /// Which mode the encoded output is going into.
+    /// Which of LaTeX's two modes the encoded output is going into.
+    /// [`text_mode`](StandardProtection::text_mode) sets this to
+    /// [`TextMode`](OutputMode::TextMode), and
+    /// [`math_mode`](StandardProtection::math_mode) to
+    /// [`MathMode`](OutputMode::MathMode).
     pub output_mode: OutputMode,
     /// What to write around a value that ends with a named macro.
+    /// [`text_mode`](StandardProtection::text_mode) sets this to
+    /// [`BracesAround`](MacroNameProtection::BracesAround), and
+    /// [`math_mode`](StandardProtection::math_mode) to
+    /// [`SpaceAfterMacroName`](MacroNameProtection::SpaceAfterMacroName). See
+    /// [`MacroNameProtection`] for the other choices.
     pub protect_names: MacroNameProtection,
-    /// What to write around a math value in text output.
+    /// What to write around a math value in text output. Both
+    /// [`text_mode`](StandardProtection::text_mode) and
+    /// [`math_mode`](StandardProtection::math_mode) set this to
+    /// `\ensuremath{…}`.
     pub math_wrap: ModeWrapper,
-    /// What to write around a text value in math output.
+    /// What to write around a text value in math output. Both
+    /// [`text_mode`](StandardProtection::text_mode) and
+    /// [`math_mode`](StandardProtection::math_mode) set this to
+    /// `\textnormal{…}`.
     pub text_wrap: ModeWrapper,
 }
 
 impl StandardProtection {
-    /// The strategy for output that goes into ordinary document text: math
+    /// The strategy for output that goes into ordinary document text. Math
     /// values are wrapped in `\ensuremath{…}`, and a value ending with a
-    /// named macro is wrapped in braces.
+    /// named macro is wrapped in braces. This is also the [`Default`].
     pub const fn text_mode() -> Self {
         StandardProtection {
             output_mode: OutputMode::TextMode,
@@ -344,12 +393,13 @@ impl StandardProtection {
         }
     }
 
-    /// The wrapper this strategy applies to a value with this hint: `None`
-    /// for [`DoNotProtect`](ReplacementProtectionHint::DoNotProtect) and for
-    /// a value whose mode is valid in the output mode.
+    /// Returns the [`ModeWrapper`] this strategy would apply to a value with
+    /// the hint `hint`, or `None` when the value needs no mode wrapping:
+    /// `None` for [`DoNotProtect`](ReplacementProtectionHint::DoNotProtect),
+    /// and for a value whose mode is already valid in the output's mode.
     ///
-    /// It is public so that a custom strategy — [`BracesAroundAll`] is the
-    /// example — can reuse the mode handling.
+    /// The method is public so that a custom strategy can reuse this mode
+    /// handling. [`BracesAroundAll`] is an example.
     pub fn mode_wrapper_for(&self, hint: ReplacementProtectionHint) -> Option<&ModeWrapper> {
         match hint {
             ReplacementProtectionHint::DoNotProtect => None,
@@ -394,7 +444,8 @@ impl StandardProtection {
 }
 
 impl Default for StandardProtection {
-    /// [`text_mode`](StandardProtection::text_mode).
+    /// Returns [`text_mode`](StandardProtection::text_mode), the strategy for
+    /// ordinary document text.
     fn default() -> Self {
         StandardProtection::text_mode()
     }
@@ -429,18 +480,23 @@ impl ReplacementProtection for StandardProtection {
     }
 }
 
-/// A protection strategy that wraps **every** value in braces, the empty one
-/// included, after the mode wrapping of the [`StandardProtection`] it holds.
+/// A protection strategy that wraps every value in braces, on top of the mode
+/// wrapping of the [`StandardProtection`] it holds. A value whose hint is
+/// [`DoNotProtect`](ReplacementProtectionHint::DoNotProtect) is written as it
+/// is, with nothing around it; every other value is braced, whether or not
+/// [`StandardProtection`] alone would have protected the value.
 ///
 /// This is pylatexenc's `'braces-all'` mode, kept for compatibility with its
 /// version-1 encoder. It is not a setting of [`StandardProtection`] but a
-/// strategy of its own, and since it is written with public API alone it is
-/// also the example of how to write one.
+/// strategy of its own. Because it is written with public API alone, it also
+/// serves as the worked example of how to write a strategy: implement
+/// [`ReplacementProtection`], read the value and its hint off the
+/// [`ProtectInput`], and write to the [`OutBuffer`] you are handed.
 ///
 /// ```
 /// use untechxt::protection::{
 ///     BracesAroundAll, ProtectInput, ReplacementProtection,
-///     ReplacementProtectionHint, StandardProtection,
+///     ReplacementProtectionHint as Hint, StandardProtection,
 /// };
 /// use untechxt::report::NoReport;
 ///
@@ -450,7 +506,7 @@ impl ReplacementProtection for StandardProtection {
 ///     .write_protected(
 ///         &mut out,
 ///         &mut NoReport,
-///         ProtectInput::new(r"\'e", ReplacementProtectionHint::text_only(r"\'e")),
+///         ProtectInput::new(r"\'e", Hint::text_only(r"\'e")),
 ///     )
 ///     .unwrap();
 /// assert_eq!(out, r"{\'e}");

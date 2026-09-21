@@ -142,7 +142,7 @@ impl Rule for BuiltinTable {
 }
 
 impl fmt::Debug for BuiltinTable {
-    /// Prints the number of entries only. The entries are far too many to
+    /// Prints only the number of entries. There are too many entries to
     /// print, and how they are stored is not part of the API.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BuiltinTable").field("len", &self.len()).finish_non_exhaustive()
@@ -168,8 +168,9 @@ pub static DEFAULT_TABLE: BuiltinTable = BuiltinTable {
 
 /// The default builtin lookup table without its entries for ASCII characters.
 ///
-/// As a rule, this table never matches an ASCII character. It therefore keeps
-/// any LaTeX code that the input already contains unchanged. It replaces the
+/// Used as a [`Rule`], this table never matches an ASCII character. It
+/// therefore keeps any LaTeX code that the input already contains unchanged,
+/// which is why it suits an input that is already LaTeX. It replaces the
 /// `non_ascii_only` flag of pylatexenc. The table shares the compiled data of
 /// [`DEFAULT_TABLE`], so that a program that uses both tables contains one
 /// copy of the data.
@@ -185,11 +186,12 @@ pub static DEFAULT_TABLE: BuiltinTable = BuiltinTable {
 pub static DEFAULT_TABLE_NON_ASCII: BuiltinTable =
     BuiltinTable { layout: DEFAULT_TABLE.layout, skip_ascii: true };
 
-/// The entries of the default builtin lookup table for ASCII characters only.
+/// A small builtin lookup table for the few printable ASCII characters that
+/// have a special meaning for LaTeX.
 ///
-/// These are the few printable ASCII characters that LaTeX either reserves
-/// for its own syntax, such as `\`, `{`, `%` and `&`, or typesets differently
-/// from how they are typed, such as `<` and `"`.
+/// These are the characters that LaTeX either reserves for its own syntax,
+/// such as `\`, `{`, `%` and `&`, or typesets differently from how they are
+/// typed, such as `<` and `"`.
 ///
 /// This table is compiled separately from [`DEFAULT_TABLE`], from the ASCII
 /// entries at the start of the same list. A program that uses only this table
@@ -211,16 +213,16 @@ pub static DEFAULT_TABLE_ASCII_SPECIALS: BuiltinTable = BuiltinTable {
     skip_ascii: false,
 };
 
-/// The profiles of [`DEFAULT_TABLE_ASCII_SPECIALS`]: index 0 alone, which needs
-/// nothing. Every ASCII entry names that one, so the small table has no use
-/// for [`PROFILES`], and a reference to it would link all of its snippets. An
-/// ASCII entry that came to name another profile would fail the index check of
-/// [`compile_static_table!`] — a compile error, and the moment to hand
-/// `&PROFILES` to the small table instead.
+/// The profiles of [`DEFAULT_TABLE_ASCII_SPECIALS`]: index 0 alone, which
+/// needs nothing. Every ASCII entry names that profile, so the small table has
+/// no use for [`PROFILES`], and a reference to [`PROFILES`] would link all of
+/// its snippets. An ASCII entry that came to name another profile would fail
+/// the index check of [`compile_static_table!`], which is a compile error and
+/// the point at which to pass `&PROFILES` to the small table instead.
 static ASCII_PROFILES: [Profile; 1] = [Profile::from_static(&[])];
 
-/// The entries of `entries` at ASCII characters. They are its head, since the
-/// entries are sorted by character — which [`compile_static_table!`] checks
+/// The entries of `entries` at ASCII characters. They are its head, because
+/// the entries are sorted by character, which [`compile_static_table!`] checks
 /// when it compiles [`DEFAULT_TABLE`].
 const fn ascii_head(entries: Entries) -> Entries {
     let mut n = 0;

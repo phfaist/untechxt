@@ -1,14 +1,15 @@
-//! Static lookup tables: a table of entries known at compile time, compiled
-//! by [`compile_static_table!`] into one of several layouts, with nothing left
-//! to do at run time and nothing to allocate.
+//! Lookup tables compiled at compile time.
 //!
-//! A table is written as a plain `const` slice of tuples — the character, its
-//! LaTeX, the [`ValueMode`] that LaTeX is valid in, and the
-//! [`ProfileIndex`] of what it needs in the preamble — beside an array of the
-//! [`Profile`]s those indices name. The macro turns the two into one of
-//! [`StaticTableBinarySearch`], [`StaticTableTwoLevelLinear`],
-//! [`StaticTableTwoLevelBitmap`] or [`StaticTableTwoLevelDirect`], each of
-//! which is a [`LookupTable`] and a [`Rule`] in its own right:
+//! The macro [`compile_static_table!`] turns a constant list of entries into a
+//! lookup table that is ready to use with no run-time work and no allocation.
+//! Write the table as a plain `const` slice of tuples. Each tuple holds a
+//! character, the LaTeX that prints it, the [`ValueMode`] that LaTeX is valid
+//! in, and the [`ProfileIndex`] of what the value needs in the preamble. Write
+//! the [`Profile`]s those indices name as a separate array. The macro compiles
+//! the two into one of [`StaticTableBinarySearch`],
+//! [`StaticTableTwoLevelLinear`], [`StaticTableTwoLevelBitmap`] or
+//! [`StaticTableTwoLevelDirect`], each of which is both a [`LookupTable`] and a
+//! [`Rule`]:
 //!
 //! ```
 //! use untechxt::lookuptable::LookupTable;
@@ -42,10 +43,11 @@
 //!
 //! # The layouts
 //!
-//! All layouts answer the same lookups; they differ in how they find the entry
-//! and in how much data they carry. Pick one by measuring, and keep the
-//! choice private to your crate — it is an implementation detail, as
-//! `BuiltinTable` keeps it for the builtin data.
+//! All four layouts return the same result for the same lookup. They differ in
+//! how they find the entry and in how much data they carry. Pick one by
+//! measuring, and keep the choice private to your crate, since the layout is an
+//! implementation detail. The [`BuiltinTable`](crate::builtin::BuiltinTable)
+//! newtype keeps the builtin data's layout private the same way.
 //!
 //! - [`StaticTableBinarySearch`]: a sorted array of the characters, searched
 //!   by bisection. No index of its own: four bytes per entry beyond the
@@ -67,19 +69,20 @@
 //!
 //! # What the compile-time checks reject
 //!
-//! The macro runs [`__build::check`] as a `const` item, so a table that
-//! breaks any of these rules is a compile error rather than a run-time
+//! The macro emits a check that runs as a `const` item, so a table that breaks
+//! any of these rules fails to compile rather than causing a run-time
 //! surprise. Constant evaluation cannot format a message, so the error names
 //! the rule that was broken but not the entry that broke it.
 //!
-//! - The characters must ascend strictly: sorted, with no duplicate. (Both
-//!   two-level layouts and the bisection depend on it.)
-//! - Every [`ProfileIndex`] must be a position of the profile array.
+//! - The characters must be sorted and strictly ascending, with no duplicate.
+//!   Both two-level layouts and the bisection depend on this order.
+//! - Every [`ProfileIndex`] must be a valid position in the profile array.
 //! - Every LaTeX value must be ASCII.
-//! - Its braces must balance, not counting the escaped `\{` and `\}`.
-//! - It must not end with a lone backslash, which would take the first
-//!   character of whatever follows into a command name.
-//! - The table must hold fewer than `u16::MAX` entries, since an entry is
+//! - The braces of every value must balance, not counting the escaped `\{` and
+//!   `\}`.
+//! - No value may end with a lone backslash, which would combine with the
+//!   first character of the following text to form a command name.
+//! - The table must contain fewer than `u16::MAX` entries, since an entry is
 //!   named by a `u16` inside the compiled layouts.
 
 use core::fmt;
@@ -94,30 +97,31 @@ use self::__build::StaticEntry;
 #[doc(inline)]
 pub use crate::__compile_static_table as compile_static_table;
 
-/// The number of a profile in a table's own profile array.
+/// The position of a profile in a table's own profile array.
 ///
-/// A static table stores one byte per entry rather than a profile, and turns
-/// it into a `&'static Profile` on lookup. The index is meaningful only
-/// together with the array it indexes; index 0 is reserved for "needs
-/// nothing", so that a lookup answers `None` for it without consulting the
-/// array.
+/// A static table stores one byte per entry rather than a whole profile, and
+/// resolves that byte to a `&'static Profile` on lookup. An index is
+/// meaningful only together with the array it indexes. Index 0 is reserved for
+/// "needs nothing", so that a lookup returns `None` for it without consulting
+/// the array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct ProfileIndex(pub u8);
 
 impl ProfileIndex {
-    /// The reserved index of the profile that needs nothing: 0.
+    /// The reserved index 0, which means the value needs nothing in the
+    /// preamble.
     pub const NONE: ProfileIndex = ProfileIndex(0);
 }
 
 /// The slot value of the direct index that means "no entry here".
 const NO_ENTRY: u16 = u16::MAX;
 
-/// A static table that finds its entry by bisecting a sorted array of the
-/// characters.
+/// A static lookup table that finds an entry by bisecting a sorted array of
+/// its characters.
 ///
-/// Build one with [`compile_static_table!`] and the layout name
-/// `binary_search`. It is the layout with no index of its own: the
-/// characters, the payloads, and nothing else.
+/// Build one with the macro [`compile_static_table!`] and the layout name
+/// `binary_search`. This is the layout with no index of its own: it holds the
+/// characters, the payloads, and nothing more.
 #[derive(Clone, Copy)]
 pub struct StaticTableBinarySearch {
     /// The characters of the entries, strictly ascending.
@@ -130,13 +134,13 @@ pub struct StaticTableBinarySearch {
     ascii_keys: AsciiSet,
 }
 
-/// A static table of one block per distinct `code point >> 8`, each scanned
-/// linearly.
+/// A static lookup table of one block per distinct `code point >> 8`, each
+/// block scanned linearly.
 ///
-/// Build one with [`compile_static_table!`] and the layout name
+/// Build one with the macro [`compile_static_table!`] and the layout name
 /// `two_level_linear`. A lookup scans the blocks for the character's high
-/// bits, then the block's low bytes for the rest; it costs one byte per entry
-/// and a few per block beyond the payloads.
+/// bits, then scans the block's low bytes for the rest. It costs one byte per
+/// entry and a few bytes per block beyond the payloads.
 #[derive(Clone, Copy)]
 pub struct StaticTableTwoLevelLinear {
     /// The distinct `code point >> 8` of the entries, strictly ascending.
@@ -154,10 +158,10 @@ pub struct StaticTableTwoLevelLinear {
     ascii_keys: AsciiSet,
 }
 
-/// A static table of one block per distinct `code point >> 8`, each with a
-/// 256-bit bitmap of the low bytes that have an entry.
+/// A static lookup table of one block per distinct `code point >> 8`, each
+/// block carrying a 256-bit bitmap of the low bytes that have an entry.
 ///
-/// Build one with [`compile_static_table!`] and the layout name
+/// Build one with the macro [`compile_static_table!`] and the layout name
 /// `two_level_bitmap`. A lookup scans the blocks for the character's high
 /// bits and then tests the bit of the character's low byte in the bitmap of
 /// the block. If the bit is set, the number of set bits before it is the
@@ -182,12 +186,12 @@ pub struct StaticTableTwoLevelBitmap {
     ascii_keys: AsciiSet,
 }
 
-/// A static table of one block per distinct `code point >> 8`, each with a
-/// direct 256-slot index.
+/// A static lookup table of one block per distinct `code point >> 8`, each
+/// block carrying a direct 256-slot index.
 ///
-/// Build one with [`compile_static_table!`] and the layout name
+/// Build one with the macro [`compile_static_table!`] and the layout name
 /// `two_level_direct_index`. A lookup scans the blocks for the character's
-/// high bits and then reads the entry's position straight out of the block's
+/// high bits, then reads the entry's position straight out of the block's
 /// index. It costs 512 bytes per block, whatever the block holds.
 #[derive(Clone, Copy)]
 pub struct StaticTableTwoLevelDirect {
@@ -205,17 +209,18 @@ pub struct StaticTableTwoLevelDirect {
 }
 
 impl StaticTableBinarySearch {
-    /// The number of entries in the table.
+    /// Returns the number of entries in the table.
     pub const fn len(&self) -> usize {
         self.values.len()
     }
 
-    /// Whether the table has no entry at all.
+    /// Returns `true` if the table has no entries.
     pub const fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
-    /// The entries of the table, in ascending order of their character.
+    /// Returns an iterator over the table's entries, in ascending order of
+    /// their character.
     pub fn iter(&self) -> impl Iterator<Item = (char, TableEntry<'_>)> + '_ {
         let profiles = self.profiles;
         self.keys
@@ -226,17 +231,18 @@ impl StaticTableBinarySearch {
 }
 
 impl StaticTableTwoLevelLinear {
-    /// The number of entries in the table.
+    /// Returns the number of entries in the table.
     pub const fn len(&self) -> usize {
         self.values.len()
     }
 
-    /// Whether the table has no entry at all.
+    /// Returns `true` if the table has no entries.
     pub const fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
-    /// The entries of the table, in ascending order of their character.
+    /// Returns an iterator over the table's entries, in ascending order of
+    /// their character.
     pub fn iter(&self) -> impl Iterator<Item = (char, TableEntry<'_>)> + '_ {
         let (starts, lows, values, profiles) =
             (self.starts, self.lows, self.values, self.profiles);
@@ -283,17 +289,18 @@ impl StaticTableTwoLevelBitmap {
 }
 
 impl StaticTableTwoLevelDirect {
-    /// The number of entries in the table.
+    /// Returns the number of entries in the table.
     pub const fn len(&self) -> usize {
         self.values.len()
     }
 
-    /// Whether the table has no entry at all.
+    /// Returns `true` if the table has no entries.
     pub const fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
-    /// The entries of the table, in ascending order of their character.
+    /// Returns an iterator over the table's entries, in ascending order of
+    /// their character.
     pub fn iter(&self) -> impl Iterator<Item = (char, TableEntry<'_>)> + '_ {
         let (values, profiles) = (self.values, self.profiles);
         self.blocks.iter().zip(self.index.iter()).flat_map(move |(&high, slots)| {
@@ -433,15 +440,16 @@ impl Rule for StaticTableTwoLevelDirect {
 }
 
 impl fmt::Debug for StaticTableBinarySearch {
-    /// The layout and the number of entries: the data itself is far too long
-    /// to print.
+    /// Formats the table as its layout name and its number of entries. The
+    /// entry data itself is too large to print.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StaticTableBinarySearch").field("len", &self.len()).finish_non_exhaustive()
     }
 }
 
 impl fmt::Debug for StaticTableTwoLevelLinear {
-    /// The layout, the number of entries and the number of blocks.
+    /// Formats the table as its layout name, its number of entries, and its
+    /// number of blocks.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StaticTableTwoLevelLinear")
             .field("len", &self.len())
@@ -461,7 +469,8 @@ impl fmt::Debug for StaticTableTwoLevelBitmap {
 }
 
 impl fmt::Debug for StaticTableTwoLevelDirect {
-    /// The layout, the number of entries and the number of blocks.
+    /// Formats the table as its layout name, its number of entries, and its
+    /// number of blocks.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StaticTableTwoLevelDirect")
             .field("len", &self.len())
@@ -537,7 +546,7 @@ pub mod __build {
             StaticEntry { encoded, flags: mode_bits | termination_bit, profile: profile.0 }
         }
 
-        /// The hint the two flag bytes stand for.
+        /// Returns the [`ReplacementProtectionHint`] that `flags` encodes.
         const fn hint(&self) -> ReplacementProtectionHint {
             let mode = match self.flags & MODE_MASK {
                 MODE_MATH => ValueMode::MathOnly,
@@ -552,10 +561,11 @@ pub mod __build {
             ReplacementProtectionHint::Value { mode, termination }
         }
 
-        /// The entry as a `LookupTable` answers it, resolving the profile
-        /// index against `profiles`. Index 0 is `None` without consulting the
-        /// array, and an index out of its range — which the compile-time
-        /// check rules out — is `None` too rather than a panic.
+        /// Returns the entry as a [`TableEntry`], resolving the profile index
+        /// against `profiles`. Profile index 0 returns `None` without
+        /// consulting the array. An index out of range also returns `None`
+        /// rather than panicking, though the compile-time check rules that
+        /// case out.
         pub(super) fn view(&self, profiles: &'static [Profile]) -> TableEntry<'static> {
             TableEntry {
                 encoded: self.encoded,
@@ -834,13 +844,16 @@ pub mod __build {
 /// ```
 ///
 /// - `ENTRIES` is a constant expression of type
-///   `&'static [(char, &'static str, ValueMode, ProfileIndex)]` — normally a
-///   `const` item, since a list of this shape written out in the macro call
-///   would be a very long token stream. The characters must ascend strictly.
+///   `&'static [(char, &'static str, ValueMode, ProfileIndex)]`. Each tuple is
+///   one entry: the character, the LaTeX that prints it, the [`ValueMode`]
+///   that LaTeX is valid in, and the [`ProfileIndex`] of what the value needs
+///   in the preamble. Write it as a `const` item, since a list of this shape
+///   written out in the macro call would be a very long token stream. The
+///   characters must be sorted and strictly ascending.
 /// - `PROFILES` is a constant or static expression of type
 ///   `&'static [Profile]`: the profiles an entry's [`ProfileIndex`] names.
-///   Position 0 is never consulted — index 0 means "needs nothing" — but it
-///   must exist, so that an index is a position of the array. Write
+///   Position 0 is never consulted, because index 0 means "needs nothing", but
+///   it must exist so that every index is a position of the array. Write
 ///   `&PROFILES` for a `static PROFILES: [Profile; N]`.
 /// - `LAYOUT` is one of the bare words `binary_search`, `two_level_linear`,
 ///   `two_level_bitmap` and `two_level_direct_index`, and it decides which of
@@ -850,8 +863,8 @@ pub mod __build {
 ///
 /// The macro declares the `static` arrays the layout is made of and evaluates
 /// to the layout struct itself, so that it can initialize a `static` of your
-/// own. Everything it computes it computes at compile time, and the checks
-/// listed in the [module documentation](self) are compile errors.
+/// own. It computes everything at compile time, and the checks listed in the
+/// [module documentation](self) are compile errors.
 ///
 /// ```
 /// use untechxt::lookuptable::LookupTable;
@@ -860,8 +873,12 @@ pub mod __build {
 /// use untechxt::statictable::{compile_static_table, ProfileIndex};
 ///
 /// static PROFILES: [Profile; 1] = [Profile::from_static(&[])];
-/// const ENTRIES: &[(char, &str, ValueMode, ProfileIndex)] =
-///     &[('\u{2014}', r"\textemdash", ValueMode::TextOnly, ProfileIndex::NONE)];
+/// const ENTRIES: &[(char, &str, ValueMode, ProfileIndex)] = &[(
+///     '\u{2014}',
+///     r"\textemdash",
+///     ValueMode::TextOnly,
+///     ProfileIndex::NONE,
+/// )];
 ///
 /// static TABLE: untechxt::statictable::StaticTableBinarySearch =
 ///     compile_static_table!(ENTRIES, &PROFILES, binary_search);

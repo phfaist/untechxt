@@ -36,40 +36,56 @@ use crate::BoxError;
 pub use self::asciiset::AsciiSet;
 pub use self::chain::{DynRuleChain, LocalDynRuleChain, RuleChain, RuleList};
 
-/// What a rule call reports. The rule may report (i) that it was successfully
-/// applied, returning the associated success data (`Ok(Some(…))`, see
-/// [`EncodedReplacement`]); (ii) that it did not match at this position
-/// (`Ok(None)`); or (iii) that it would normally apply but encountered a
-/// critical error that should be reported (`Err(…)`), which stops the
-/// encoding.
+/// The result of applying a rule at one position. It is one of three
+/// outcomes:
+///
+/// - `Ok(Some(replacement))`, the rule matched and returns the
+///   [`EncodedReplacement`] for what it consumed;
+/// - `Ok(None)`, the rule did not match at this position; or
+/// - `Err(error)`, the rule encountered an error, which stops the encoding
+///   with [`EncodeError::Rule`](crate::EncodeError::Rule).
 pub type RuleResult<'a> = Result<Option<EncodedReplacement<'a>>, BoxError>;
 
-/// One rule of an encoder: it is offered a position in the input and answers
-/// with the LaTeX that replaces what it consumed there, or with "not mine".
+/// One rule of an encoder. A rule takes a position in the input, through a
+/// [`RuleInput`], and returns the LaTeX that replaces the input it consumes
+/// at that position, or reports that it does not match there.
 ///
-/// The encoder tries its rules in order at every position and the first match
-/// wins: no rule is tried after a match, and no longest match is sought.
-/// Several rules are combined into one with a
-/// [`RuleChain`].
+/// The encoder tries its rules in order at every position, and the first
+/// match wins: no rule is tried after a match, and no longest match is
+/// sought. Combine several rules into one with the [`RuleChain`] struct. For
+/// matching that this fixed order cannot express, order the rules or write a
+/// single rule so that the first match is the one you want.
 ///
-/// [`Debug`](core::fmt::Debug) is the only supertrait. `Send` and `Sync` are
-/// deliberately **not** required: they are auto traits, so an
-/// [`Encoder`](crate::Encoder) is `Send`/`Sync` exactly when its rules are,
-/// and requiring them would forbid rules that hold a JavaScript callback, an
-/// [`Rc`](alloc::rc::Rc) or a [`RefCell`](core::cell::RefCell).
+/// There are three ways to build a rule:
 ///
-/// A closure becomes a rule through [`rule_fn`]; a lookup table of the user's
-/// through [`TableRule`](crate::lookuptable::TableRule). `&R`, `Box<R>` and
-/// `Option<R>` are rules whenever `R` is.
+/// - the [`rule_fn`] function, which builds a rule from a closure;
+/// - the [`TableRule`](crate::lookuptable::TableRule) struct, which builds a
+///   rule from a custom
+///   [`LookupTable`](crate::lookuptable::LookupTable); and
+/// - a custom type that implements [`Rule`] directly, for a rule that reads
+///   several characters ahead or borrows from its own state.
+///
+/// The crate's own lookup tables implement [`Rule`] already. A shared
+/// reference `&R`, a [`Box<R>`](alloc::boxed::Box), and an `Option<R>` are
+/// also rules whenever `R` is a rule. An `Option<R>` that is `None` never
+/// matches, which switches a rule off without changing the type of the chain
+/// it sits in.
+///
+/// The only supertrait is [`Debug`](core::fmt::Debug). This trait does not
+/// require `Send` or `Sync`. Those are auto traits, so an
+/// [`Encoder`](crate::Encoder) is `Send` and `Sync` exactly when its rules
+/// are, and requiring them here would rule out a rule that holds a
+/// JavaScript callback, an [`Rc`](alloc::rc::Rc), or a
+/// [`RefCell`](core::cell::RefCell).
 ///
 /// ```
-/// use untechxt::protection::ReplacementProtectionHint;
+/// use untechxt::protection::ReplacementProtectionHint as Hint;
 /// use untechxt::rule::{rule_fn, Rule, RuleInput};
 ///
-/// // A rule that spells out an ellipsis, however it was typed.
+/// // A rule that encodes an ellipsis typed as three periods.
 /// let ellipsis = rule_fn(|input: RuleInput<'_>| {
 ///     Ok(if input.rest().starts_with("...") {
-///         Some(input.replace_prefix(3, r"\ldots", ReplacementProtectionHint::any_mode(r"\ldots")))
+///         Some(input.replace_prefix(3, r"\ldots", Hint::any_mode(r"\ldots")))
 ///     } else {
 ///         None
 ///     })
@@ -78,98 +94,116 @@ pub type RuleResult<'a> = Result<Option<EncodedReplacement<'a>>, BoxError>;
 /// assert_eq!(ellipsis.apply(input).unwrap().unwrap().encoded(), r"\ldots");
 /// ```
 pub trait Rule: fmt::Debug {
-    /// Tries the rule at the position `input` names.
+    /// Tries the rule at the position that `input` names, and returns a
+    /// [`RuleResult`]: `Ok(Some(_))` for a match, `Ok(None)` for no match,
+    /// or `Err(_)` for an error.
     ///
-    /// The one lifetime `'a` covers both the rule and the input, so that the
-    /// value returned may borrow from either: a table lends out its own
-    /// static string, a rule that passes existing LaTeX through lends out a
-    /// slice of the input, and neither allocates.
+    /// The single lifetime `'a` covers both the rule and the input, so the
+    /// returned value may borrow from either without allocating. A lookup
+    /// table returns its own static string, and a rule that passes existing
+    /// LaTeX through returns a slice of the input.
     ///
     /// # Errors
     ///
-    /// A rule that cannot do its work — a foreign-language callback that
-    /// raised — reports it here, and the encoding stops with
-    /// [`EncodeError::Rule`](crate::EncodeError::Rule).
+    /// Returns an error when the rule cannot do its work, for example when
+    /// a foreign-language callback raised an exception. The error stops the
+    /// encoding with [`EncodeError::Rule`](crate::EncodeError::Rule).
     fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a>;
 
-    /// The ASCII characters this rule may match at: a promise that it never
-    /// matches at an ASCII character outside this set.
+    /// Returns the set of ASCII characters that this rule may match at. The
+    /// set is a promise that the rule never matches at an ASCII character
+    /// outside it.
     ///
-    /// The encoder asks once, in [`Encoder::new`](crate::Encoder::new), and
-    /// copies runs of ASCII outside the union of its rules' sets without
-    /// decoding characters or calling anyone. The answer must therefore
-    /// always be the same. It is a promise in one direction only: the encoder
-    /// may still consult the rule at other characters, where a correct rule
-    /// declines.
+    /// The encoder calls this method once, in
+    /// [`Encoder::new`](crate::Encoder::new), takes the union of its rules'
+    /// sets, and copies runs of ASCII input outside that union without
+    /// decoding characters or calling any rule. The returned set must
+    /// therefore be the same on every call. The promise holds in one
+    /// direction only: the encoder may still try the rule at other
+    /// characters, where a correct rule returns `Ok(None)`.
     ///
-    /// The default is [`AsciiSet::ALL`]: "I may match anywhere".
+    /// The default implementation returns [`AsciiSet::ALL`], meaning that
+    /// the rule may match at any ASCII character. This default is always
+    /// correct and only makes the scan slower. A rule that matches at a
+    /// known, smaller set of ASCII characters should override it, and a rule
+    /// that never matches at an ASCII character, such as a lookup table of
+    /// non-ASCII entries, returns [`AsciiSet::EMPTY`].
     fn ascii_triggers(&self) -> AsciiSet {
         AsciiSet::ALL
     }
 }
 
-/// Where a rule is being tried: the whole input, the byte position in it, and
-/// the character there.
+/// The position at which a rule is being tried: the whole input, the byte
+/// offset into it, and the character at that offset.
 ///
-/// It is a small `Copy` struct with accessors rather than public fields, so
-/// that more context can be given to rules later without breaking the ones
-/// that exist. It is also the only way to build an [`EncodedReplacement`],
-/// which is how a rule cannot report a consumption that is not a valid
-/// advance.
+/// A [`RuleInput`] is a small [`Copy`] struct. It exposes its parts through
+/// accessor methods rather than public fields, so that later versions can
+/// give rules more context without breaking existing rules. It is also the
+/// only way to build an [`EncodedReplacement`], through the methods
+/// [`replace_char`](RuleInput::replace_char),
+/// [`replace_prefix`](RuleInput::replace_prefix), and
+/// [`try_replace_prefix`](RuleInput::try_replace_prefix). This keeps a rule
+/// from reporting a byte count that is not a valid advance over the input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RuleInput<'s> {
-    /// The whole input the encoder is working on, already normalized.
+    /// The whole input the encoder is encoding, after normalization.
     full: &'s str,
-    /// The byte offset in `full` the rule is tried at; always a character
-    /// boundary.
+    /// The byte offset into `full` at which the rule is tried. It always
+    /// lies on a character boundary.
     pos: usize,
     /// The character at `pos`, decoded once by the encoder.
     ch: char,
 }
 
 impl<'s> RuleInput<'s> {
-    /// The input at byte `pos` of `full`, or `None` when `pos` is not the
-    /// start of a character of `full`. The encoder builds its own; this is
-    /// for testing a rule and for calling one directly.
+    /// Creates a [`RuleInput`] at byte `pos` of `full`, or returns `None`
+    /// when `pos` is not the start of a character in `full`. The encoder
+    /// builds its own inputs, so this constructor is for testing a rule or
+    /// calling one directly.
     pub fn new(full: &'s str, pos: usize) -> Option<Self> {
         let ch = full.get(pos..)?.chars().next()?;
         Some(RuleInput { full, pos, ch })
     }
 
-    /// The input at byte `pos` of `full`, where `ch` is known to be the
-    /// character there. What the encoder builds, having decoded `ch` already.
+    /// Creates a [`RuleInput`] at byte `pos` of `full`, where `ch` is
+    /// already known to be the character at that offset. This is what the
+    /// encoder builds, having decoded `ch` in its scan.
     pub(crate) const fn at(full: &'s str, pos: usize, ch: char) -> Self {
         RuleInput { full, pos, ch }
     }
 
-    /// The character at the position, already decoded.
+    /// Returns the character at the position, already decoded.
     pub const fn ch(&self) -> char {
         self.ch
     }
 
-    /// The byte offset of the position in the normalized input.
+    /// Returns the byte offset of the position in the normalized input.
     pub const fn pos(&self) -> usize {
         self.pos
     }
 
-    /// The whole normalized input.
+    /// Returns the whole normalized input.
     pub const fn full(&self) -> &'s str {
         self.full
     }
 
-    /// The input from the position on, `&full()[pos()..]`, for lookahead. Its
-    /// first character is [`ch`](RuleInput::ch).
+    /// Returns the input from the position onward, `&full()[pos()..]`, for
+    /// lookahead. Its first character is the one that the method
+    /// [`ch`](RuleInput::ch) returns.
     pub fn rest(&self) -> &'s str {
         &self.full[self.pos..]
     }
 
-    /// The input before the position, `&full()[..pos()]`, for lookbehind.
+    /// Returns the input before the position, `&full()[..pos()]`, for
+    /// lookbehind.
     pub fn before(&self) -> &'s str {
         &self.full[..self.pos]
     }
 
-    /// A replacement that consumes exactly the character at the position.
-    /// Always valid, whatever the input.
+    /// Returns an [`EncodedReplacement`] that consumes exactly the character
+    /// at the position and replaces it with `encoded`, described to the
+    /// protection strategy by `hint`. This replacement is always valid,
+    /// whatever the input.
     pub fn replace_char<'a>(
         &self,
         encoded: impl Into<Cow<'a, str>>,
@@ -183,16 +217,17 @@ impl<'s> RuleInput<'s> {
         }
     }
 
-    /// A replacement that consumes the first `n_bytes` bytes of
-    /// [`rest`](RuleInput::rest).
+    /// Returns an [`EncodedReplacement`] that consumes the first `n_bytes`
+    /// bytes of [`rest`](RuleInput::rest) and replaces them with `encoded`,
+    /// described to the protection strategy by `hint`.
     ///
     /// # Panics
     ///
-    /// Unless `n_bytes` is non-zero, no more than the length of
-    /// [`rest`](RuleInput::rest), and on a character boundary — the same
-    /// requirements as slicing the input, and a bug in the rule.
-    /// [`try_replace_prefix`](RuleInput::try_replace_prefix) reports them
-    /// instead.
+    /// Panics unless `n_bytes` is non-zero, no larger than the length of
+    /// [`rest`](RuleInput::rest), and on a character boundary. These are the
+    /// same requirements as slicing the input, so a violation is a bug in the
+    /// rule. Use [`try_replace_prefix`](RuleInput::try_replace_prefix) to
+    /// report an invalid length instead of panicking.
     pub fn replace_prefix<'a>(
         &self,
         n_bytes: usize,
@@ -205,15 +240,16 @@ impl<'s> RuleInput<'s> {
         }
     }
 
-    /// The same as [`replace_prefix`](RuleInput::replace_prefix), reporting
-    /// an invalid length instead of panicking; `?` turns the error into a
-    /// rule error. This is what a rule driven from another language uses,
-    /// where the length is not the rule author's to check.
+    /// Works like the method [`replace_prefix`](RuleInput::replace_prefix),
+    /// but returns an error for an invalid length instead of panicking. The
+    /// `?` operator turns that error into a rule error. Use this method when
+    /// `n_bytes` comes from outside the rule, such as from a rule driven by
+    /// another language, where the rule author cannot check the length.
     ///
     /// # Errors
     ///
-    /// [`InvalidPrefixLength`] when `n_bytes` is zero, reaches past the end
-    /// of the input, or ends inside a character.
+    /// Returns [`InvalidPrefixLength`] when `n_bytes` is zero, reaches past
+    /// the end of the input, or ends inside a character.
     pub fn try_replace_prefix<'a>(
         &self,
         n_bytes: usize,
@@ -232,25 +268,26 @@ impl<'s> RuleInput<'s> {
     }
 }
 
-/// What a matching rule hands back: how much input it consumed, the LaTeX
-/// that replaces it, how that LaTeX must be protected, and what it needs in
-/// the preamble.
+/// The result of a rule that matched: how much input the rule consumed, the
+/// LaTeX that replaces that input, how that LaTeX must be protected, and
+/// what that LaTeX needs in the preamble.
 ///
-/// The fields are private and the only way to build one is through
-/// [`RuleInput`] ([`replace_char`](RuleInput::replace_char),
-/// [`replace_prefix`](RuleInput::replace_prefix),
-/// [`try_replace_prefix`](RuleInput::try_replace_prefix)), so that a
-/// consumption that is not a valid advance cannot be constructed and the
+/// The fields are private. The only way to build an [`EncodedReplacement`]
+/// is through a [`RuleInput`], with the method
+/// [`replace_char`](RuleInput::replace_char),
+/// [`replace_prefix`](RuleInput::replace_prefix), or
+/// [`try_replace_prefix`](RuleInput::try_replace_prefix). A byte count that
+/// is not a valid advance over the input therefore cannot be built, and the
 /// encoder needs no check of its own.
 ///
-/// The lifetime covers the encoded text and the profile alike: both may
-/// belong to the rule, or to the input, or be `'static`.
+/// The lifetime `'a` covers the encoded text and the profile alike. Each of
+/// them may belong to the rule, borrow from the input, or be `'static`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedReplacement<'a> {
-    /// The number of input bytes consumed; never zero, always ending on a
-    /// character boundary within the input.
+    /// The number of input bytes consumed. It is never zero, and it always
+    /// ends on a character boundary within the input.
     consumed: usize,
-    /// The LaTeX that replaces them.
+    /// The LaTeX that replaces the consumed input.
     encoded: Cow<'a, str>,
     /// What the protection strategy must know about that LaTeX.
     hint: ReplacementProtectionHint,
@@ -259,45 +296,51 @@ pub struct EncodedReplacement<'a> {
 }
 
 impl<'a> EncodedReplacement<'a> {
-    /// The same replacement, stating that its LaTeX needs `profile` in the
-    /// document's preamble.
+    /// Returns the same replacement, recording that its LaTeX needs
+    /// `profile` in the document's preamble.
     #[must_use]
     pub fn with_needs(mut self, profile: &'a Profile) -> Self {
         self.needs = Some(profile);
         self
     }
 
-    /// The number of input bytes the rule consumed.
+    /// Returns the number of input bytes the rule consumed.
     pub const fn consumed(&self) -> usize {
         self.consumed
     }
 
-    /// The LaTeX that replaces them, with no protection applied.
+    /// Returns the LaTeX that replaces the consumed input, with no
+    /// protection applied.
     pub fn encoded(&self) -> &str {
         &self.encoded
     }
 
-    /// What the rule said about that LaTeX.
+    /// Returns the [`ReplacementProtectionHint`] the rule gave for that
+    /// LaTeX.
     pub const fn hint(&self) -> ReplacementProtectionHint {
         self.hint
     }
 
-    /// What the LaTeX needs in the document's preamble, if anything.
+    /// Returns what the LaTeX needs in the document's preamble, or `None`.
     pub const fn needs(&self) -> Option<&'a Profile> {
         self.needs
     }
 }
 
-/// A rule asked to consume a number of bytes that is not a valid advance:
-/// zero bytes, more than the input holds, or a count ending inside a
-/// character.
+/// The error returned when a rule asks to consume a number of bytes that is
+/// not a valid advance over the input: zero bytes, more bytes than the input
+/// holds, or a count that ends inside a character.
+///
+/// The method [`try_replace_prefix`](RuleInput::try_replace_prefix) returns
+/// this error, and the method [`replace_prefix`](RuleInput::replace_prefix)
+/// panics with it instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InvalidPrefixLength {
-    /// The byte position in the input the rule was tried at.
+    /// The byte offset into the input at which the rule was tried.
     pub position: usize,
-    /// The number of bytes it asked to consume.
+    /// The number of bytes the rule asked to consume.
     pub n_bytes: usize,
-    /// The number of bytes the input holds from `position` on.
+    /// The number of bytes the input holds from `position` onward.
     pub available: usize,
 }
 
@@ -314,20 +357,23 @@ impl fmt::Display for InvalidPrefixLength {
 
 impl core::error::Error for InvalidPrefixLength {}
 
-/// A rule made of the closure or function `f`.
+/// A rule built from the closure or function `f`.
 ///
-/// Build one with [`rule_fn`], which is where the requirements on `f` are
-/// described.
+/// Build a [`RuleFn`] with the [`rule_fn`] function, which describes the
+/// requirements on `f`. By default the rule may match at any ASCII
+/// character; restrict that with the method
+/// [`with_ascii_triggers`](RuleFn::with_ascii_triggers).
 pub struct RuleFn<F> {
     f: F,
     ascii_triggers: AsciiSet,
 }
 
 impl<F> RuleFn<F> {
-    /// The same rule, promising that it never matches at an ASCII character
-    /// outside `set` — which lets the encoder copy runs of the other ASCII
-    /// characters without calling it. See
-    /// [`Rule::ascii_triggers`].
+    /// Returns the same rule with its ASCII trigger set replaced by `set`,
+    /// promising that the rule never matches at an ASCII character outside
+    /// `set`. This lets the encoder copy runs of the other ASCII characters
+    /// without calling the rule. See the method [`Rule::ascii_triggers`] for
+    /// the contract that `set` must satisfy.
     #[must_use]
     pub fn with_ascii_triggers(mut self, set: AsciiSet) -> Self {
         self.ascii_triggers = set;
@@ -354,36 +400,42 @@ where
     }
 }
 
-/// The rule that applies the closure or function `f` at every position.
+/// Builds a [`RuleFn`] that applies the closure or function `f` at every
+/// position.
 ///
-/// The closure is given a [`RuleInput`] and answers a [`RuleResult`]: a
-/// replacement built through the input, `None` where it does not apply, or an
-/// error that stops the encoding.
+/// The closure takes a [`RuleInput`] and returns a [`RuleResult`]: a
+/// replacement built through that input for a match, `Ok(None)` where the
+/// rule does not apply, or an error that stops the encoding.
 ///
-/// It may hand out owned strings, string literals, `&'static Profile`s and
-/// slices of the input, but it cannot lend out its own captures — a rule that
-/// lends from its own state implements [`Rule`] on a struct instead. (This is
-/// what the higher-ranked bound says: the answer may borrow from the input,
-/// which is a different input every time.)
+/// The closure may return owned strings, string literals, `&'static
+/// Profile` references, and slices of the input, but it cannot return a
+/// value borrowed from its own captures. For a rule that borrows from its
+/// own state, implement the [`Rule`] trait on a custom struct instead. The
+/// higher-ranked lifetime bound on `f` states this: the returned value may
+/// borrow from the input, which is a different input at each position.
+///
+/// By default the rule may match at any ASCII character. Restrict that with
+/// the method [`RuleFn::with_ascii_triggers`].
 ///
 /// ```
-/// use untechxt::protection::ReplacementProtectionHint;
-/// use untechxt::rule::rule_fn;
+/// use untechxt::protection::ReplacementProtectionHint as Hint;
+/// use untechxt::rule::{rule_fn, RuleInput};
 /// use untechxt::Encoder;
 ///
 /// // Pass LaTeX that is already in the input through untouched.
-/// let verbatim = rule_fn(|input: untechxt::rule::RuleInput<'_>| {
+/// let verbatim = rule_fn(|input: RuleInput<'_>| {
 ///     let rest = input.rest();
-///     Ok(rest.strip_prefix("[[").and_then(|rest| rest.find("]]").map(|end| {
-///         input.replace_prefix(
-///             end + 4,
-///             &rest[..end],
-///             ReplacementProtectionHint::DoNotProtect,
-///         )
-///     })))
+///     Ok(rest.strip_prefix("[[").and_then(|rest| {
+///         rest.find("]]").map(|end| {
+///             input.replace_prefix(end + 4, &rest[..end], Hint::DoNotProtect)
+///         })
+///     }))
 /// });
 /// let encoder = Encoder::new(verbatim);
-/// assert_eq!(encoder.encode(r"a [[\textbf{b}]] c").unwrap(), r"a \textbf{b} c");
+/// assert_eq!(
+///     encoder.encode(r"a [[\textbf{b}]] c").unwrap(),
+///     r"a \textbf{b} c",
+/// );
 /// ```
 pub fn rule_fn<F>(f: F) -> RuleFn<F>
 where
@@ -392,6 +444,8 @@ where
     RuleFn { f, ascii_triggers: AsciiSet::ALL }
 }
 
+/// A shared reference to a rule is itself a rule, and forwards each call to
+/// the rule it refers to.
 impl<R: Rule + ?Sized> Rule for &R {
     fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a> {
         (**self).apply(input)
@@ -402,6 +456,8 @@ impl<R: Rule + ?Sized> Rule for &R {
     }
 }
 
+/// A boxed rule is itself a rule, and forwards each call to the rule in the
+/// box.
 impl<R: Rule + ?Sized> Rule for Box<R> {
     fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a> {
         (**self).apply(input)
@@ -412,8 +468,10 @@ impl<R: Rule + ?Sized> Rule for Box<R> {
     }
 }
 
-/// A rule that can be switched off without changing the type of the chain it
-/// is in: `None` never matches.
+/// An optional rule is itself a rule, which switches a rule off without
+/// changing the type of the chain it sits in. `Some(rule)` forwards each
+/// call to `rule`, and `None` never matches and triggers on no ASCII
+/// character.
 impl<R: Rule> Rule for Option<R> {
     fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a> {
         match self {

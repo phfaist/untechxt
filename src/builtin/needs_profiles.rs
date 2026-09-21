@@ -1,31 +1,33 @@
-//! The builtin preamble chunks and profiles: what a document must hold for
-//! the spellings of [`default_table`](super::default_table) to print.
+//! The builtin preamble chunks and profiles. These describe what a document
+//! must load in its preamble so that the LaTeX spellings of the builtin table
+//! (see [`default_table`](super::default_table)) are defined.
 //!
 //! A spelling such as `\mathds{1}` prints nothing on its own: the command
-//! `\mathds` exists only once the document has loaded the package `dsfont`.
-//! Some spellings need something no package provides — `\UnxTBbold{0}` needs
-//! a math alphabet declared from a font family, because the package that has
-//! that font would redefine `\mathbb` for the whole document — and for those
-//! the [`Chunk`] is the declaration itself.
+//! `\mathds` is defined only once the document has loaded the package
+//! `dsfont`. Some spellings need something that no package provides. For
+//! example, `\UnxTBbold{0}` needs a math alphabet declared from a font
+//! family, because the package that carries that font would redefine
+//! `\mathbb` for the whole document. For a need of that kind, the [`Chunk`]
+//! is the declaration itself rather than a package.
 //!
-//! Every entry of the builtin table carries a [`ProfileIndex`]: the position
-//! in [`PROFILES`] of the set of chunks its spelling needs. The constants
-//! below name those positions, and the entries are written with the names,
-//! not the numbers. Index 0, [`BUILTINS`], is the empty set — a spelling the
-//! LaTeX kernel prints by itself — and a table lookup answers `None` for it
-//! without reading the array at all.
+//! Every entry of the builtin table carries a [`ProfileIndex`], the position
+//! in [`PROFILES`] of the set of chunks that the entry's spelling needs. The
+//! constants below name those positions, and the entries are written with the
+//! names rather than the numbers. Index 0, [`BUILTINS`], is the empty set: it
+//! is the profile of a spelling that needs nothing beyond the LaTeX kernel,
+//! and a table lookup returns `None` for it without reading the array.
 //!
 //! # Maintaining these
 //!
-//! A chunk exists here only because some entry needs it; a spelling that
-//! needs something no chunk covers adds one. A profile is added at the end,
-//! never reordered, since the index is what the compiled table stores; adding
-//! one means adding its constant here and naming that constant in the
-//! entries.
+//! A chunk exists here only because some entry needs it. When a spelling
+//! needs something that no existing chunk covers, add a chunk for it. Add a
+//! profile at the end of the list and never reorder the profiles, because the
+//! index is what the compiled table stores. Adding a profile means adding its
+//! constant here and naming that constant in the entries of the table.
 //!
-//! Every command a snippet chunk defines is named `\UnxT…`, a prefix this
-//! crate reserves, and so is every font identifier a snippet declares. A
-//! document may therefore load whatever packages it likes beside these
+//! Every command that a snippet chunk defines is named `\UnxT…`, a prefix
+//! this crate reserves, and so is every font identifier that a snippet
+//! declares. A document may therefore load any packages it likes beside these
 //! chunks: nothing here redefines a command of the kernel or of a package.
 
 use crate::preamble::{Chunk, Profile};
@@ -86,8 +88,8 @@ const FONTENC_X2_CHUNK: Chunk = Chunk::package_with_options("fontenc-x2", "fonte
 /// and Siberian languages `X2` has no place for are declared; beside `T1`.
 const FONTENC_T2B_CHUNK: Chunk = Chunk::package_with_options("fontenc-t2b", "fontenc", "T2B,T1");
 
-/// The `T2C` Cyrillic font encoding, in which the older Slavonic letters —
-/// the semisoft sign, er with tick — are declared; beside `T1`.
+/// The `T2C` Cyrillic font encoding, in which the older Slavonic letters are
+/// declared, the semisoft sign and er with tick among them; beside `T1`.
 const FONTENC_T2C_CHUNK: Chunk = Chunk::package_with_options("fontenc-t2c", "fontenc", "T2C,T1");
 
 /// The `OT2` Cyrillic font encoding, the seven-bit one, which is where fita
@@ -95,8 +97,8 @@ const FONTENC_T2C_CHUNK: Chunk = Chunk::package_with_options("fontenc-t2c", "fon
 const FONTENC_OT2_CHUNK: Chunk = Chunk::package_with_options("fontenc-ot2", "fontenc", "OT2,T1");
 
 /// The `T2D` Old Church Slavonic font encoding, in which the letters of the
-/// Slavonic alphabet that no modern encoding has — omega, ksi, psi, koppa,
-/// the yuses — are declared; beside `T1`.
+/// Slavonic alphabet that no modern encoding has are declared, omega, ksi,
+/// psi, koppa and the yuses among them; beside `T1`.
 const FONTENC_T2D_CHUNK: Chunk = Chunk::package_with_options("fontenc-t2d", "fontenc", "T2D,T1");
 
 /// The math alphabet `\UnxTBbold`, declared from the `bbold` font family, for
@@ -115,7 +117,7 @@ const SCRIPT_CHUNK: Chunk =
     Chunk::snippet("script-alphabet", r"\DeclareMathAlphabet{\UnxTScr}{U}{dutchcal}{m}{n}");
 
 /// The text symbol `\UnxTCyrThousands`, the Cyrillic thousands sign, read
-/// from its slot in the `T2D` encoding, which declares it as an accent — a
+/// from its slot in the `T2D` encoding, which declares it as an accent, a
 /// form that sets the sign over its argument rather than beside it.
 const CYR_THOUSANDS_CHUNK: Chunk = Chunk::snippet(
     "cyrillic-thousands",
@@ -218,9 +220,9 @@ macro_rules! builtin_profiles {
         /// [`Chunk`]s that the spellings carrying that position need.
         ///
         /// Position 0 is the empty profile, so that a [`ProfileIndex`] is
-        /// always a position of this array; a table lookup answers `None`
-        /// for it without reading the array. The constants of this module
-        /// name the positions.
+        /// always a valid position of this array. A table lookup returns
+        /// `None` for position 0 without reading the array. The constants of
+        /// this module name the positions.
         ///
         /// ```
         /// use untechxt::builtin::needs_profiles::{AMSSYMB, PROFILES};
@@ -251,78 +253,87 @@ macro_rules! builtin_profile_indices {
 }
 
 builtin_profiles! {
-    /// Nothing beyond the LaTeX kernel — the commands every document has
-    /// without loading a package. It is the profile of most of the builtin
-    /// entries, and it is the reserved index 0, which a table lookup answers
-    /// `None` for.
+    /// Nothing beyond the LaTeX kernel, which is the set of commands every
+    /// document has without loading a package. This is the profile of most
+    /// builtin entries, and it is the reserved index 0. A table lookup
+    /// returns `None` for index 0.
     BUILTINS, BUILTINS_CHUNKS = [];
 
-    /// `dsfont`, for the `\mathds` spellings.
+    /// The profile for the package `dsfont`, needed by the `\mathds`
+    /// spellings.
     DSFONT, DSFONT_CHUNKS = [DSFONT_CHUNK];
 
-    /// `nicefrac`, for the `\nicefrac` spellings.
+    /// The profile for the package `nicefrac`, needed by the `\nicefrac`
+    /// spellings.
     NICEFRAC, NICEFRAC_CHUNKS = [NICEFRAC_CHUNK];
 
-    /// The `T2A` font encoding, for the Cyrillic spellings of the modern
-    /// languages.
+    /// The profile for the `T2A` font encoding, needed by the Cyrillic
+    /// spellings of the modern languages.
     FONTENC_T2A, FONTENC_T2A_CHUNKS = [FONTENC_T2A_CHUNK];
 
-    /// The `T1` font encoding, for the letters and punctuation `OT1` has no
-    /// place for: the ogonek accent `\k`, `\DH`, `\TH`, `\dh`, `\th`, `\DJ`,
-    /// `\dj`, `\NG`, `\ng`, the guillemets and the low quotation marks.
+    /// The profile for the `T1` font encoding, needed by the letters and
+    /// punctuation `OT1` has no place for: the ogonek accent `\k`, `\DH`,
+    /// `\TH`, `\dh`, `\th`, `\DJ`, `\dj`, `\NG`, `\ng`, the guillemets and the
+    /// low quotation marks.
     FONTENC_T1, FONTENC_T1_CHUNKS = [FONTENC_T1_CHUNK];
 
-    /// `tipa`, for the phonetic letters the `\text…` spellings name that no
-    /// other package defines.
+    /// The profile for the package `tipa`, needed by the `\text…` spellings
+    /// of the phonetic letters that no other package defines.
     TIPA, TIPA_CHUNKS = [TIPA_CHUNK];
 
-    /// `amssymb`, for `\mathbb`, `\mathfrak` and the American Mathematical
-    /// Society's symbols.
+    /// The profile for the package `amssymb`, needed by `\mathbb`,
+    /// `\mathfrak` and the American Mathematical Society's symbols.
     AMSSYMB, AMSSYMB_CHUNKS = [AMSSYMB_CHUNK];
 
-    /// `amsmath`, for `\boldsymbol`, `\iint`, `\iiint` and `\nobreakdash`.
+    /// The profile for the package `amsmath`, needed by `\boldsymbol`,
+    /// `\iint`, `\iiint` and `\nobreakdash`.
     AMSMATH, AMSMATH_CHUNKS = [AMSMATH_CHUNK];
 
-    /// `mathrsfs`, for the script alphabet `\mathscr`, which is the capitals.
+    /// The profile for the package `mathrsfs`, needed by the script alphabet
+    /// `\mathscr`, which is the capitals.
     MATHRSFS, MATHRSFS_CHUNKS = [MATHRSFS_CHUNK];
 
-    /// `bbm`, for the double-struck lowercase letters and the digit `2`.
+    /// The profile for the package `bbm`, needed by the double-struck
+    /// lowercase letters and the digit `2`.
     BBM, BBM_CHUNKS = [BBM_CHUNK];
 
-    /// The `\UnxTBbold` alphabet, for the double-struck digits `bbm` has no
-    /// glyph for.
+    /// The profile for the `\UnxTBbold` alphabet, needed by the double-struck
+    /// digits `bbm` has no glyph for.
     BBOLD, BBOLD_CHUNKS = [BBOLD_CHUNK];
 
-    /// The `\UnxTScr` alphabet, for the lowercase script letters `rsfs` has
-    /// no glyph for.
+    /// The profile for the `\UnxTScr` alphabet, needed by the lowercase
+    /// script letters `rsfs` has no glyph for.
     SCRIPT, SCRIPT_CHUNKS = [SCRIPT_CHUNK];
 
-    /// The `X2` font encoding, for the Cyrillic letters `T2A` has no place
-    /// for.
+    /// The profile for the `X2` font encoding, needed by the Cyrillic letters
+    /// `T2A` has no place for.
     FONTENC_X2, FONTENC_X2_CHUNKS = [FONTENC_X2_CHUNK];
 
-    /// The `T2B` font encoding, for the Caucasian and Siberian letters.
+    /// The profile for the `T2B` font encoding, needed by the Caucasian and
+    /// Siberian letters.
     FONTENC_T2B, FONTENC_T2B_CHUNKS = [FONTENC_T2B_CHUNK];
 
-    /// The `T2C` font encoding, for the older Slavonic letters.
+    /// The profile for the `T2C` font encoding, needed by the older Slavonic
+    /// letters.
     FONTENC_T2C, FONTENC_T2C_CHUNKS = [FONTENC_T2C_CHUNK];
 
-    /// The `OT2` font encoding, for fita.
+    /// The profile for the `OT2` font encoding, needed by fita.
     FONTENC_OT2, FONTENC_OT2_CHUNKS = [FONTENC_OT2_CHUNK];
 
-    /// The `T2D` font encoding, for the Old Church Slavonic letters.
+    /// The profile for the `T2D` font encoding, needed by the Old Church
+    /// Slavonic letters.
     FONTENC_T2D, FONTENC_T2D_CHUNKS = [FONTENC_T2D_CHUNK];
 
-    /// The `T2D` font encoding and the `\UnxTCyrThousands` symbol read from
-    /// it.
+    /// The profile for the `T2D` font encoding and the `\UnxTCyrThousands`
+    /// symbol read from it.
     CYR_THOUSANDS, CYR_THOUSANDS_CHUNKS = [FONTENC_T2D_CHUNK, CYR_THOUSANDS_CHUNK];
 
-    /// The STIX symbol fonts and their `\UnxT…` symbols.
+    /// The profile for the STIX symbol fonts and their `\UnxT…` symbols.
     STIX, STIX_CHUNKS = [STIX_CHUNK];
 
-    /// The `\UnxTrecorder` symbol read from the `wasy` font.
+    /// The profile for the `\UnxTrecorder` symbol read from the `wasy` font.
     WASY, WASY_CHUNKS = [WASY_CHUNK];
 
-    /// `tipx`, for `\textnrleg`.
+    /// The profile for the package `tipx`, needed by `\textnrleg`.
     TIPX, TIPX_CHUNKS = [TIPX_CHUNK];
 }

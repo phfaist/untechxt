@@ -1,6 +1,6 @@
-//! Unit tests for the core of the crate (step 1): the rules, the chain, the
+//! Unit tests for the core of the crate: the rules, the chain, the
 //! protection strategies, the encoder loop and what it reports. The full
-//! suite ported from the initial port comes with the builtin table.
+//! suite ported from the initial port is in `latexencode.rs`.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;

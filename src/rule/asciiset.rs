@@ -1,17 +1,18 @@
-//! [`AsciiSet`]: a set of ASCII characters held as a bitmap.
+//! The [`AsciiSet`] struct: a set of ASCII characters held as a bitmap.
 
 use core::fmt;
 use core::ops::{BitOr, RangeInclusive};
 
 /// A set of ASCII characters, one bit per character, held in a `u128`.
 ///
-/// Membership is a shift and a mask, which is what makes the encoder's scan
-/// loop cheap: a rule announces through [`Rule::ascii_triggers`] the ASCII
-/// characters it can match at, the encoder unions those sets once, and every
-/// input byte below `0x80` outside the union is copied without decoding a
-/// character or calling a rule.
+/// A membership test is a shift and a mask, which is what keeps the
+/// encoder's scan loop cheap. A rule reports the ASCII characters it may
+/// match at through the method [`Rule::ascii_triggers`], the encoder takes
+/// the union of those sets once, and every input byte below `0x80` outside
+/// the union is copied without decoding a character or calling a rule.
 ///
-/// A byte of `0x80` or more is in no set: the type describes ASCII alone.
+/// A byte of `0x80` or greater belongs to no set, because an [`AsciiSet`]
+/// describes ASCII characters alone.
 ///
 /// [`Rule::ascii_triggers`]: crate::rule::Rule::ascii_triggers
 ///
@@ -27,21 +28,22 @@ use core::ops::{BitOr, RangeInclusive};
 pub struct AsciiSet(u128);
 
 impl AsciiSet {
-    /// Every ASCII character, `\0` through `\x7F`. The default answer of
-    /// [`Rule::ascii_triggers`](crate::rule::Rule::ascii_triggers): "I may
-    /// match anywhere".
+    /// Every ASCII character, `\0` through `\x7F`. The value that the method
+    /// [`Rule::ascii_triggers`](crate::rule::Rule::ascii_triggers) returns
+    /// by default, meaning that the rule may match at any ASCII character.
     pub const ALL: Self = AsciiSet(u128::MAX);
 
-    /// No character at all. The triggers of a rule that never matches at an
-    /// ASCII character, such as a table of non-ASCII entries.
+    /// No character at all. The set for a rule that never matches at an
+    /// ASCII character, such as a lookup table whose entries are all
+    /// non-ASCII.
     pub const EMPTY: Self = AsciiSet(0);
 
-    /// The set of the characters of `chars`.
+    /// Returns the set of the characters in `chars`.
     ///
     /// # Panics
     ///
-    /// If `chars` holds a character outside ASCII. In a `const` item that is
-    /// a compile error.
+    /// Panics if `chars` contains a character outside ASCII. In a `const`
+    /// item that panic is a compile error instead.
     pub const fn of(chars: &str) -> Self {
         let bytes = chars.as_bytes();
         let mut bits = 0u128;
@@ -55,12 +57,12 @@ impl AsciiSet {
         AsciiSet(bits)
     }
 
-    /// The set of the bytes of `range`, both ends included. An empty range
-    /// (`start > end`) gives the empty set.
+    /// Returns the set of the bytes in `range`, both ends included. An empty
+    /// range, where `start > end`, returns the empty set.
     ///
     /// # Panics
     ///
-    /// If the range holds a byte of `0x80` or more.
+    /// Panics if the range contains a byte of `0x80` or greater.
     pub const fn range(range: RangeInclusive<u8>) -> Self {
         let (start, end) = (*range.start(), *range.end());
         if start > end {
@@ -79,8 +81,8 @@ impl AsciiSet {
         AsciiSet(bits)
     }
 
-    /// The set of the ASCII bytes that `f` answers `true` for. `f` is called
-    /// once for each of the 128 bytes, here and never again.
+    /// Returns the set of the ASCII bytes for which `f` returns `true`. This
+    /// method calls `f` once for each of the 128 ASCII bytes and never again.
     pub fn from_fn(f: impl Fn(u8) -> bool) -> Self {
         let mut bits = 0u128;
         for byte in 0u8..128 {
@@ -91,29 +93,33 @@ impl AsciiSet {
         AsciiSet(bits)
     }
 
-    /// The union of the two sets. [`BitOr`] (`a | b`) does the same outside a
-    /// `const` context.
+    /// Returns the union of the two sets. The [`BitOr`] operator (`a | b`)
+    /// does the same thing outside a `const` context.
     pub const fn union(self, other: Self) -> Self {
         AsciiSet(self.0 | other.0)
     }
 
-    /// Whether `byte` is in the set. Always `false` for a byte of `0x80` or
-    /// more.
+    /// Returns whether `byte` is in the set. Returns `false` for any byte of
+    /// `0x80` or greater.
     pub const fn contains(self, byte: u8) -> bool {
         byte < 128 && (self.0 >> byte) & 1 != 0
     }
 
-    /// Whether the set holds no character at all.
+    /// Returns whether the set contains no character at all.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
-    /// The number of characters in the set.
+    /// Returns the number of characters in the set.
     pub(crate) const fn count(self) -> usize {
         self.0.count_ones() as usize
     }
 
-    /// The set with `byte` added.
+    /// Returns the set with `byte` added.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `byte` is `0x80` or greater.
     pub(crate) const fn with(self, byte: u8) -> Self {
         assert!(byte < 128, "AsciiSet::with: non-ASCII byte");
         AsciiSet(self.0 | 1u128 << byte)
@@ -129,8 +135,9 @@ impl BitOr for AsciiSet {
 }
 
 impl fmt::Debug for AsciiSet {
-    /// The members, written out: `AsciiSet("#$%&")`, with non-printable
-    /// characters as `\xNN`. The two constants print as their names.
+    /// Formats the set by writing out its members: `AsciiSet("#$%&")`, with
+    /// each non-printable character shown as `\xNN`. The constants
+    /// [`AsciiSet::ALL`] and [`AsciiSet::EMPTY`] format as their own names.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if *self == AsciiSet::ALL {
             return f.write_str("AsciiSet::ALL");

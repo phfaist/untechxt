@@ -1,4 +1,4 @@
-//! The static table layouts (step 2): one small table compiled in each of the
+//! The static table layouts: one small table compiled in each of the
 //! layouts, checked the same way in all of them.
 
 use untechxt::lookuptable::LookupTable;

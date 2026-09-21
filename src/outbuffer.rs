@@ -1,30 +1,30 @@
-//! [`OutBuffer`]: where the encoder writes, and the adapters that carry its
-//! output to a [`core::fmt::Write`] or, with the crate feature `std`, to a
-//! `std::io::Write`.
+//! Output buffers: the [`OutBuffer`] trait that the encoder appends its
+//! output to, and the adapters [`FmtOut`], for a [`core::fmt::Write`], and
+//! `IoOut`, for a `std::io::Write` with the crate feature `std`.
 
 use alloc::boxed::Box;
 use alloc::string::String;
 
 use crate::BoxError;
 
-/// Abstract output assembly: where an encoder appends what it writes.
+/// A destination that the encoder appends its output to.
 ///
-/// [`String`] implements it, and so the plain case costs nothing: the error
-/// check disappears when the compiler inlines the call. The trait exists so
-/// that output can stream — to a formatter ([`FmtOut`]), to a file or a
-/// socket (`IoOut`, with the crate feature `std`) — without assembling the
-/// whole string first.
+/// [`String`] implements this trait, so the plain case costs nothing extra:
+/// the error check can disappear when the compiler inlines the call. The
+/// trait exists so that the output can stream, to a formatter with
+/// [`FmtOut`] or to a file or a socket with `IoOut` (with the crate feature
+/// `std`), without assembling the whole string first.
 ///
 /// The error type is the fixed [`BoxError`], rather than an associated type
 /// that would spread through every signature of the crate. An I/O error is
-/// carried through as it is, boxed on the error path alone.
+/// carried through unchanged, boxed only on the error path.
 pub trait OutBuffer {
     /// Appends `s` to the output.
     ///
     /// # Errors
     ///
-    /// Whatever the sink reports; the encoder passes it on as
-    /// [`EncodeError::Output`](crate::EncodeError::Output).
+    /// Whatever the underlying destination reports. The encoder passes it
+    /// on as [`EncodeError::Output`](crate::EncodeError::Output).
     fn push_str(&mut self, s: &str) -> Result<(), BoxError>;
 
     /// Appends the character `c` to the output. The default writes its UTF-8
@@ -51,8 +51,8 @@ impl OutBuffer for String {
     }
 }
 
-/// An [`OutBuffer`] that writes to a [`core::fmt::Write`] — a
-/// [`core::fmt::Formatter`], a `String`, anything that formats.
+/// An [`OutBuffer`] that writes to a [`core::fmt::Write`], such as a
+/// [`core::fmt::Formatter`] or a `String`.
 ///
 /// ```
 /// use untechxt::outbuffer::{FmtOut, OutBuffer};
@@ -75,13 +75,14 @@ impl<W: core::fmt::Write> OutBuffer for FmtOut<W> {
     }
 }
 
-/// An [`OutBuffer`] that writes to a [`std::io::Write`] — a file, a socket,
-/// standard output. The encoder's text is written as UTF-8.
+/// An [`OutBuffer`] that writes to a [`std::io::Write`], such as a file, a
+/// socket, or standard output. The output is written as UTF-8.
 ///
 /// Wrap the writer in a [`std::io::BufWriter`] where each write would
-/// otherwise reach the operating system: the encoder writes in small pieces.
+/// otherwise reach the operating system, because the encoder writes in
+/// small pieces.
 ///
-/// Only with the crate feature `std`.
+/// Available only with the crate feature `std`.
 #[cfg(feature = "std")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IoOut<W: std::io::Write>(pub W);

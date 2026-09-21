@@ -1,4 +1,5 @@
-//! The suite ported from the initial Rust port (`initial-rust-port/`), which
+//! The suite ported from the initial Rust port (`dev-docs/initial-rust-port/`),
+//! which
 //! had itself been ported from pylatexenc's `test/test_latexencode.py`, plus
 //! the conformance golden.
 //!
@@ -6,7 +7,8 @@
 //!
 //! - **The ported tests**: pylatexenc's own encoder tests, rewritten against
 //!   this crate's API with the same input and the same expected output. Each
-//!   keeps the name it had in `initial-rust-port/tests/latexencode.rs`, so
+//!   keeps the name it had in
+//!   `dev-docs/initial-rust-port/tests/latexencode.rs`, so
 //!   that the correspondence to the old suite stays visible; a test whose
 //!   expected output changed with the new design says so in a comment. The
 //!   tests of features this design dropped — the `non_ascii_only` flag, the

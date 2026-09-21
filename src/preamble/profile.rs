@@ -1,5 +1,5 @@
-//! What a value needs in the preamble: the [`Profile`] that one encoded value
-//! carries, and the [`PreambleNeeds`] that a whole document accumulates.
+//! The [`Profile`] that one encoded value needs in the preamble, and the
+//! [`PreambleNeeds`] that a whole document collects.
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
@@ -10,35 +10,36 @@ use crate::preamble::{Chunk, ChunkPreamble};
 use crate::report::EncodeReporter;
 use crate::BoxError;
 
-/// A **profile**: the set of [`Chunk`]s that one encoded value needs in the
-/// preamble.
+/// The set of [`Chunk`]s that one encoded value needs in the preamble.
 ///
-/// A rule hands one out with the value it produces
-/// ([`EncodedReplacement::with_needs`]), as a plain reference to a profile the
-/// rule owns. There is no registry and no identifier space: tables from
-/// unrelated crates cannot clash, and a rule built at run time returns a
-/// reference to a profile it built itself. Same chunk identifier always means
-/// the same chunk, which is how [`PreambleNeeds`] unions profiles of different
-/// origins.
+/// A rule returns a profile with the value it produces (see the method
+/// [`EncodedReplacement::with_needs`]), as a plain reference to a profile the
+/// rule owns. There is no registry and no shared identifier space, so tables
+/// from unrelated crates cannot clash, and a rule built at run time returns a
+/// reference to a profile it built itself. The same chunk identifier always
+/// means the same chunk, which is how the struct [`PreambleNeeds`] combines
+/// profiles of different origins.
+///
+/// A profile either borrows a static list of chunks or owns one. Use the
+/// method [`Profile::from_static`] for a static list, which is what static
+/// tables use. Use the method [`Profile::new`] to own a list built at run
+/// time.
 ///
 /// [`EncodedReplacement::with_needs`]:
 ///     crate::rule::EncodedReplacement::with_needs
-///
-/// A profile borrows a static chunk list ([`from_static`](Profile::from_static),
-/// which static tables use) or owns one ([`new`](Profile::new)).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Profile {
     chunks: Cow<'static, [Chunk]>,
 }
 
 impl Profile {
-    /// The profile of the chunks of a static list, without a copy. This is
-    /// how the builtin profiles and any user's static table state their
-    /// needs.
+    /// The profile that borrows the static list `chunks`, without copying it.
+    /// This is how the builtin profiles, and any user's static table, state
+    /// their needs.
     ///
-    /// A [`Chunk`] has drop glue, so a slice literal of chunks is not
-    /// promoted to a static on its own: give the list a static of its own and
-    /// point at it.
+    /// A [`Chunk`] has drop glue, so a slice literal of chunks is not promoted
+    /// to a static on its own. Declare the list as a static of its own and
+    /// pass a reference to it, as the example does.
     ///
     /// ```
     /// use untechxt::preamble::{Chunk, Profile};
@@ -51,8 +52,8 @@ impl Profile {
         Profile { chunks: Cow::Borrowed(chunks) }
     }
 
-    /// The profile of the chunks of `chunks`, which it takes over. This is
-    /// how a rule built at run time states its needs.
+    /// The profile that owns `chunks`. This is how a rule built at run time
+    /// states its needs.
     pub fn new(chunks: Vec<Chunk>) -> Self {
         Profile { chunks: Cow::Owned(chunks) }
     }
@@ -62,27 +63,28 @@ impl Profile {
         &self.chunks
     }
 
-    /// Whether the profile asks for nothing — the profile of a value the
-    /// LaTeX kernel prints by itself.
+    /// Whether the profile has no chunks. A value that the LaTeX kernel prints
+    /// by itself needs an empty profile.
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 }
 
-/// What a document must have in its preamble because of the LaTeX written
-/// into it: a set of [`Chunk`]s, accumulated as values are encoded.
+/// The set of [`Chunk`]s that a whole document needs in its preamble,
+/// collected as values are encoded.
 ///
-/// The set starts empty ([`new`](PreambleNeeds::new)), grows by one value's
-/// [`Profile`] ([`include`](PreambleNeeds::include)) or by another set
-/// ([`merge`](PreambleNeeds::merge)), and is read as its chunks
-/// ([`chunks`](PreambleNeeds::chunks)) or written out directly
-/// ([`write_preamble`](PreambleNeeds::write_preamble)). It owns a copy of
-/// each distinct chunk it has seen, so that it carries no lifetime and can
-/// outlive the rules that reported them.
+/// The set starts empty. Add one value's [`Profile`] with the method
+/// [`PreambleNeeds::include`], or another set with the method
+/// [`PreambleNeeds::merge`]. Read the collected chunks with the method
+/// [`PreambleNeeds::chunks`], or write the preamble directly with the method
+/// [`PreambleNeeds::write_preamble`]. The set owns a copy of each distinct
+/// chunk it has seen, so that it has no lifetime and can outlive the rules
+/// that reported the chunks.
 ///
-/// It is itself an [`EncodeReporter`], and so it can be passed to
-/// [`Encoder::encode_into`](crate::Encoder::encode_into) as the report of a
-/// caller that wants the needs alone.
+/// The struct [`PreambleNeeds`] is itself an [`EncodeReporter`], so a caller
+/// that wants the preamble needs and nothing else can pass it to the method
+/// [`Encoder::encode_into`](crate::Encoder::encode_into) as the report. The
+/// fragments of one document then report into one set.
 ///
 /// ```
 /// use untechxt::preamble::{Chunk, PreambleNeeds, Profile};
@@ -106,13 +108,14 @@ pub struct PreambleNeeds {
 }
 
 impl PreambleNeeds {
-    /// The empty set: a document needing nothing beyond the LaTeX kernel.
+    /// An empty set, for a document that needs nothing beyond the LaTeX
+    /// kernel.
     pub fn new() -> Self {
         PreambleNeeds::default()
     }
 
-    /// Adds every chunk of `profile` that the set does not hold yet, keyed by
-    /// [`Chunk::id`](Chunk::id). Calling this again with the same profile
+    /// Adds every chunk of `profile` that the set does not already hold,
+    /// identified by [`Chunk::id`]. Calling this again with the same profile
     /// changes nothing.
     pub fn include(&mut self, profile: &Profile) {
         for chunk in profile.chunks() {
@@ -120,43 +123,45 @@ impl PreambleNeeds {
         }
     }
 
-    /// Adds every chunk of `other` that the set does not hold yet.
+    /// Adds every chunk of `other` that the set does not already hold. Use
+    /// this to combine the needs of separately encoded fragments into one set.
     pub fn merge(&mut self, other: &PreambleNeeds) {
         for chunk in other.chunks() {
             self.include_chunk(chunk);
         }
     }
 
-    /// Whether the set holds no chunk at all.
+    /// Whether the set holds no chunk.
     pub fn is_empty(&self) -> bool {
         self.packages.is_empty() && self.snippets.is_empty()
     }
 
-    /// The chunks of the set: every package chunk first, then every
-    /// declaration chunk, each group in first-seen order.
+    /// The chunks of the set, as an iterator: every package chunk first, then
+    /// every declaration chunk, each group in first-seen order.
     ///
     /// Packages come first because a declaration may call into a package of
-    /// its own profile, and a preamble must load it first.
+    /// its own profile, and a preamble must load the package first.
     pub fn chunks(&self) -> impl Iterator<Item = &Chunk> + '_ {
         self.packages.iter().chain(self.snippets.iter())
     }
 
-    /// Writes the preamble the set asks for: one `\usepackage` line per
-    /// package chunk, then the declarations of each snippet chunk, in the
-    /// order of [`chunks`](PreambleNeeds::chunks), each ended by a newline.
-    /// Nothing at all for an empty set.
+    /// Writes the preamble that the set describes to `out`: one `\usepackage`
+    /// line per package chunk, then the declarations of each snippet chunk, in
+    /// the order of the method [`PreambleNeeds::chunks`], each line ended by a
+    /// newline. An empty set writes nothing.
     ///
     /// Several chunks that load the same package under different options are
-    /// written as several lines: this does **not** merge options. That is
-    /// safe for the builtin chunks — the only package they load more than
-    /// once is `fontenc`, which may be loaded repeatedly, and every builtin
-    /// `fontenc` chunk names `T1` last, so the document's default encoding
-    /// stays `T1`. A consumer with its own package machinery reads
-    /// [`ChunkPreamble::PackageWithOptions`] and merges as it sees fit.
+    /// written as several lines. This method does not merge options. That is
+    /// safe for the builtin chunks. The only package they load more than once
+    /// is `fontenc`, which may be loaded repeatedly, and every builtin
+    /// `fontenc` chunk lists `T1` last, so the document's default font encoding
+    /// stays `T1`. A consumer with its own package machinery can read the
+    /// variant [`ChunkPreamble::PackageWithOptions`] and merge the options
+    /// itself.
     ///
     /// # Errors
     ///
-    /// Whatever `out` reports.
+    /// Returns whatever `out` returns when a write fails.
     pub fn write_preamble<O: OutBuffer + ?Sized>(&self, out: &mut O) -> Result<(), BoxError> {
         for chunk in self.chunks() {
             match &chunk.preamble {
@@ -198,8 +203,8 @@ impl EncodeReporter for PreambleNeeds {
 }
 
 impl fmt::Debug for PreambleNeeds {
-    /// The chunk identifiers of the set, in the order of
-    /// [`chunks`](PreambleNeeds::chunks).
+    /// Formats the set as the list of its chunk identifiers, in the order of
+    /// the method [`PreambleNeeds::chunks`].
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.chunks().map(|chunk| &*chunk.id)).finish()
     }

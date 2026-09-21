@@ -1,5 +1,5 @@
-//! The default rules: the function [`default_rules`] and its return type
-//! [`DefaultRules`].
+//! The [`default_rules`] function, which returns the crate's default rules,
+//! and the [`DefaultRules`] type it returns.
 
 use core::fmt;
 
@@ -85,7 +85,7 @@ pub const fn default_rules() -> DefaultRules {
 /// ```
 #[derive(Clone, Copy)]
 pub struct DefaultRules {
-    /// The rules themselves.
+    /// The builtin rule that the default rules apply.
     inner: Inner,
 }
 

@@ -2,15 +2,15 @@
 //! with the mode that spelling is valid in and the preamble chunks a document
 //! needs in order to print it.
 //!
-//! **This file is maintained by hand.** It originated in a copy of
-//! pylatexenc's table (see *Provenance* below) and is a source file of this
-//! library like any other since then: a spelling that is wrong is corrected
-//! here, and the correction is listed under *Departures from pylatexenc*. No
-//! generator produces this file, and no second copy of the data exists
-//! anywhere.
+//! This file is maintained by hand. It originated in a copy of pylatexenc's
+//! table (see *Provenance* below) and has been a source file of this library
+//! like any other since then. When a spelling is wrong, correct it here and
+//! list the correction under *Departures from pylatexenc*. No generator
+//! produces this file, and no second copy of the data exists anywhere.
 //!
-//! The one-off script `tools/migrate_tables.py` produced the `ENTRIES` block
-//! below once, out of the earlier port's `initial-rust-port/src/tables.rs`: it
+//! The one-off script `dev-docs/migrate_tables.py` produced the `ENTRIES`
+//! block below once, out of the earlier port's
+//! `dev-docs/initial-rust-port/src/tables.rs`: it
 //! split the `\ensuremath{…}` wrapper off into the mode column and renamed the
 //! `\flm` command prefix to `\UnxT`. That script has done its work; this file
 //! is the source of truth now, and the script is kept only as a record of how
@@ -18,35 +18,38 @@
 //!
 //! Three pieces make up the builtin table, and they are read together:
 //!
-//! - `ENTRIES`, below — a character, its LaTeX spelling, the [`ValueMode`] of
-//!   that spelling and the [`ProfileIndex`] of the preamble it needs. Sorted
-//!   by character. `mod.rs` compiles it into the static table
-//!   `DEFAULT_TABLE`, whose data the table `DEFAULT_TABLE_NON_ASCII` shares,
-//!   and compiles its ASCII head once more into the small table
-//!   `DEFAULT_TABLE_ASCII_SPECIALS`.
-//! - The **preamble chunks** of `needs_profiles.rs`, which some spellings
-//!   need: each a LaTeX package with the options it is loaded with, or a block
-//!   of declarations no package makes.
-//! - The **profiles** of `needs_profiles.rs`: each a set of chunks, named by
-//!   its position, which is the index an entry carries. Profile 0, `BUILTINS`,
-//!   is the empty set — a spelling the LaTeX kernel prints by itself.
+//! - `ENTRIES`, below. Each entry is a character, its LaTeX spelling, the
+//!   [`ValueMode`] that spelling is valid in and the [`ProfileIndex`] of the
+//!   preamble it needs. The entries are sorted by character. `mod.rs`
+//!   compiles them into the static table `DEFAULT_TABLE`, whose data the
+//!   table `DEFAULT_TABLE_NON_ASCII` shares, and compiles their ASCII head
+//!   once more into the small table `DEFAULT_TABLE_ASCII_SPECIALS`.
+//! - The preamble chunks of `needs_profiles.rs`, which some spellings need.
+//!   Each chunk is a LaTeX package with the options it is loaded with, or a
+//!   block of declarations that no package makes.
+//! - The profiles of `needs_profiles.rs`. Each profile is a set of chunks,
+//!   named by its position, which is the index an entry carries. Profile 0,
+//!   `BUILTINS`, is the empty set, the profile of a spelling that needs
+//!   nothing beyond the LaTeX kernel.
 //!
 //! # How the table is maintained
 //!
 //! An entry is a line of `ENTRIES`, in character order, with a comment naming
 //! the character. Its profile is the name of a profile constant of
 //! `needs_profiles.rs`, chosen by reading the spelling: which commands it
-//! writes, and which package or declaration defines each of them. A spelling
-//! that needs something no chunk covers takes a new chunk there and, where no
-//! existing profile is that chunk's set, a new profile with a constant beside
-//! it.
+//! writes, and which package or declaration defines each of them. When a
+//! spelling needs something no chunk covers, add a new chunk to
+//! `needs_profiles.rs` and, if no existing profile is that chunk's set, add a
+//! new profile with a constant beside it.
 //!
-//! Its mode says where the spelling may be written: `MATH` for a bare
-//! mathematical spelling ([`ValueMode::MathOnly`] — the encoder wraps it in
-//! `\ensuremath{…}` when the output is text), `TEXT` for a text-mode spelling
-//! ([`ValueMode::TextOnly`]), and `ANY` for one that holds in both
-//! ([`ValueMode::AnyMode`]): a plain character, or a spelling that carries its
-//! own `\ensuremath{…}` throughout.
+//! Its mode says where the spelling may be written:
+//!
+//! - `MATH`, for a bare mathematical spelling ([`ValueMode::MathOnly`]). The
+//!   encoder wraps it in `\ensuremath{…}` when the output is text.
+//! - `TEXT`, for a text-mode spelling ([`ValueMode::TextOnly`]).
+//! - `ANY`, for a spelling that is valid in both modes
+//!   ([`ValueMode::AnyMode`]): a plain character, or a spelling that carries
+//!   its own `\ensuremath{…}` throughout.
 //!
 //! The `compile_static_table!` macro checks the rest at compile time: that the
 //! keys ascend strictly, that every profile index names a profile that exists,
@@ -60,21 +63,24 @@
 //! `pylatexenc/latexencode/_uni2latexmap.py` (the dictionary `uni2latex`,
 //! 1553 entries, U+0022 to U+1D7FF), whose character map was in turn adapted
 //! from latexcodec. Both license notices are reproduced below and stay with
-//! the table. It has been maintained by hand since 2026-09-14; the entries are
+//! the table. It has been maintained by hand since 2026-09-14. The entries are
 //! pylatexenc's except for the departures listed next, and the profiles are
-//! this library's own — pylatexenc records nothing about packages.
+//! this library's own, because pylatexenc records nothing about packages.
 //!
 //! # Departures from pylatexenc
 //!
 //! Every entry of this table compiles and sets the glyph the character stands
-//! for, on the floor this library states (a LaTeX system of 2022 or later with
-//! the chunks of `needs_profiles.rs` installed). Reaching that took the
-//! departures listed here. They are of three kinds: a spelling whose command
-//! no installed package defines is replaced by one that works; a spelling
-//! whose command is right but whose font has no glyph for the letter is moved
-//! to a font that has it; and a character no installed font has at all loses
-//! its entry, so that a caller reports it as one no spelling is known for and
-//! the recomposed LaTeX still compiles.
+//! for, on the baseline this library assumes: a LaTeX system of 2022 or later
+//! with the chunks of `needs_profiles.rs` installed. Reaching that baseline
+//! took the departures listed here, of three kinds:
+//!
+//! - A spelling whose command no installed package defines is replaced by one
+//!   that works.
+//! - A spelling whose command is correct but whose font has no glyph for the
+//!   letter is moved to a font that has the glyph.
+//! - A character that no installed font has at all has no entry, so that the
+//!   encoder reports it as a character no spelling is known for and the
+//!   recomposed LaTeX still compiles.
 //!
 //! | Characters | pylatexenc's spelling | here | why |
 //! |---|---|---|---|
@@ -100,10 +106,11 @@
 //!
 //! # Spellings that are still to correct
 //!
-//! None: every entry compiles and sets its glyph, and the entries that could
-//! not are listed as removed in the departures above. A spelling found wrong
-//! is corrected here, its departure recorded in that table, and — where it
-//! needs something the chunks do not yet offer — a chunk added.
+//! None. Every entry compiles and sets its glyph, and the entries that could
+//! not are listed as removed in the departures above. When you find a
+//! spelling that is wrong, correct it here, record its departure in the table
+//! above, and, if it needs something the chunks do not yet offer, add a
+//! chunk.
 //!
 //! # License
 //!
@@ -133,8 +140,8 @@
 //! > USE OR OTHER DEALINGS IN THE SOFTWARE.
 //!
 //! The character map in pylatexenc was itself adapted from latexcodec 0.2, by
-//! Peter Troeger (<https://pypi.python.org/pypi/latexcodec>), whose notice
-//! pylatexenc keeps and which is reproduced here for the same reason:
+//! Matthias C. M. Troffaes (<https://pypi.python.org/pypi/latexcodec>), whose
+//! notice pylatexenc keeps and which is reproduced here for the same reason:
 //!
 //! > latexcodec is a lexer and codec to work with LaTeX code in Python
 //! >
@@ -170,7 +177,7 @@ const TEXT: ValueMode = ValueMode::TextOnly;
 const MATH: ValueMode = ValueMode::MathOnly;
 const ANY: ValueMode = ValueMode::AnyMode;
 
-/// The builtin entries: 1549 characters, each with its LaTeX spelling, the
+/// The builtin entries: one per character, each with its LaTeX spelling, the
 /// [`ValueMode`] that spelling is valid in and the [`ProfileIndex`] of the
 /// preamble it needs, sorted by character.
 ///
@@ -179,7 +186,7 @@ const ANY: ValueMode = ValueMode::AnyMode;
 /// `builtin` module instead; this slice is not part of the stable API.
 #[doc(hidden)]
 pub const ENTRIES: &[(char, &str, ValueMode, ProfileIndex)] = &[
-    // BEGIN ENTRIES (generated by tools/migrate_tables.py)
+    // BEGIN ENTRIES (generated by dev-docs/migrate_tables.py)
     ('\u{0022}', r#"''"#, ANY, BUILTINS), // QUOTATION MARK
     ('\u{0023}', r#"\#"#, TEXT, BUILTINS), // NUMBER SIGN
     ('\u{0024}', r#"\$"#, TEXT, BUILTINS), // DOLLAR SIGN

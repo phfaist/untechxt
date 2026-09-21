@@ -1,5 +1,21 @@
-//! Lookup tables: one encoded value per character, and how such a table
-//! becomes a [`Rule`].
+//! Lookup tables, each holding one encoded value per character.
+//!
+//! A lookup table maps a single character to the LaTeX that prints it. This
+//! module contains the [`LookupTable`] trait that every such table
+//! implements, the [`TableEntry`] that a lookup returns, and two ways to
+//! build a table:
+//!
+//! - [`DynTable`] is a table built at run time, one entry at a time. Use it
+//!   for an encoder configured from a file, from a language binding, or from a
+//!   caller who overrides a few entries of another table.
+//! - The [`statictable`](crate::statictable) module compiles a table of your
+//!   own at compile time, with nothing to allocate at run time, and the
+//!   [`builtin`](crate::builtin) module holds the crate's own tables, which
+//!   are compiled that way.
+//!
+//! A lookup table is not a [`Rule`] on its own. The crate's own tables and
+//! [`DynTable`] implement [`Rule`] directly. Create a rule from a custom
+//! [`LookupTable`] with the [`TableRule`] wrapper.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -8,22 +24,31 @@ use crate::preamble::Profile;
 use crate::protection::ReplacementProtectionHint;
 use crate::rule::{AsciiSet, Rule, RuleInput, RuleResult};
 
-/// A table that answers, for one character, the LaTeX that prints it.
+/// A lookup table: one encoded value per character.
 ///
-/// This is what the crate's own tables are, and what a user's table
-/// implements to become a rule through [`TableRule`]. The crate's own tables
-/// implement [`Rule`] directly, which is why there is no blanket
-/// implementation here: one would clash with the `&R` and `Box<R>` forwarding
-/// implementations of [`Rule`].
+/// A lookup table returns, for a single character, the LaTeX that prints that
+/// character, together with the protection hint and the preamble needs that
+/// go with it (see [`TableEntry`]). The crate's own tables implement this
+/// trait, and so does [`DynTable`]. Create a rule from a custom
+/// [`LookupTable`] with the [`TableRule`] wrapper.
+///
+/// This trait does not provide a blanket implementation of [`Rule`], because
+/// one would clash with the `&R` and `Box<R>` forwarding implementations of
+/// [`Rule`]. The crate's own tables therefore implement [`Rule`] directly.
 pub trait LookupTable: core::fmt::Debug {
-    /// The table's entry for `ch`, or `None` when it has none.
+    /// Returns the table's entry for `ch`, or `None` if the table has no entry
+    /// for it.
     fn lookup(&self, ch: char) -> Option<TableEntry<'_>>;
 
-    /// The ASCII characters the table has entries for. The encoder uses it as
-    /// the table's [`Rule::ascii_triggers`], and so it must never leave out a
-    /// character the table answers for.
+    /// Returns the ASCII characters the table has entries for. The encoder
+    /// uses this set as the table's [`Rule::ascii_triggers`], so it must
+    /// include every ASCII character the table has an entry for. If it left
+    /// one out, the encoder's ASCII fast path would copy that character
+    /// unchanged instead of encoding it.
     ///
-    /// The default is [`AsciiSet::ALL`].
+    /// The default is [`AsciiSet::ALL`], which is always correct and never
+    /// skips a character, at the cost of consulting the table at every ASCII
+    /// character.
     fn ascii_keys(&self) -> AsciiSet {
         AsciiSet::ALL
     }
@@ -39,21 +64,25 @@ impl<T: LookupTable + ?Sized> LookupTable for &T {
     }
 }
 
-/// What a [`LookupTable`] holds for one character.
+/// The entry a [`LookupTable`] returns for one character: the LaTeX, the
+/// protection hint that goes with it, and its preamble needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableEntry<'t> {
     /// The LaTeX that prints the character, with nothing around it.
     pub encoded: &'t str,
-    /// What the protection strategy must know about that LaTeX.
+    /// The [`ReplacementProtectionHint`] the protection strategy uses to wrap
+    /// the value: the LaTeX mode the value is valid in and whether it ends
+    /// with a named macro.
     pub hint: ReplacementProtectionHint,
-    /// What the LaTeX needs in the document's preamble, if anything.
+    /// The [`Profile`] of what the value needs in the document's preamble, or
+    /// `None` when it needs nothing beyond the LaTeX kernel.
     pub needs: Option<&'t Profile>,
 }
 
-/// The rule that looks every character up in the [`LookupTable`] it holds.
+/// A rule that looks each character up in the [`LookupTable`] it holds.
 ///
-/// The crate's own tables are rules already; this is for a table of the
-/// user's.
+/// The crate's own tables are rules already, and [`DynTable`] is a rule too.
+/// Use [`TableRule`] to make a rule from a custom [`LookupTable`].
 ///
 /// ```
 /// use untechxt::lookuptable::{DynTable, TableRule};
@@ -61,7 +90,11 @@ pub struct TableEntry<'t> {
 /// use untechxt::Encoder;
 ///
 /// let mut table = DynTable::new();
-/// table.insert('\u{2014}', r"\textemdash", ReplacementProtectionHint::text_only(r"\textemdash"));
+/// table.insert(
+///     '\u{2014}',
+///     r"\textemdash",
+///     ReplacementProtectionHint::text_only(r"\textemdash"),
+/// );
 /// let encoder = Encoder::new(TableRule(&table));
 /// assert_eq!(encoder.encode("a \u{2014} b").unwrap(), r"a {\textemdash} b");
 /// ```
@@ -81,9 +114,12 @@ impl<T: LookupTable> Rule for TableRule<T> {
 /// A lookup table built at run time: a sorted list of entries, searched by
 /// bisection.
 ///
-/// This is the table of an encoder configured from a file, from a language
-/// binding, or from a caller who overrides a few characters of a static
-/// table. It owns its LaTeX and its profiles, and it is a [`Rule`] itself.
+/// A [`DynTable`] owns the LaTeX and the profiles of its entries, and it is a
+/// [`Rule`] itself. Use it for an encoder configured from a file, from a
+/// language binding, or from a caller who overrides a few entries of a static
+/// table. Add entries with [`insert`](DynTable::insert), or with
+/// [`with_entry`](DynTable::with_entry) when building a table in a single
+/// expression.
 ///
 /// ```
 /// use untechxt::lookuptable::DynTable;
@@ -91,7 +127,11 @@ impl<T: LookupTable> Rule for TableRule<T> {
 /// use untechxt::Encoder;
 ///
 /// let mut table = DynTable::new();
-/// table.insert('\u{3b1}', r"\alpha", ReplacementProtectionHint::math_only(r"\alpha"));
+/// table.insert(
+///     '\u{3b1}',
+///     r"\alpha",
+///     ReplacementProtectionHint::math_only(r"\alpha"),
+/// );
 /// let encoder = Encoder::new(table);
 /// assert_eq!(encoder.encode("\u{3b1}").unwrap(), r"\ensuremath{\alpha}");
 /// ```
@@ -99,7 +139,7 @@ impl<T: LookupTable> Rule for TableRule<T> {
 pub struct DynTable {
     /// The entries, in ascending order of their character.
     entries: Vec<DynEntry>,
-    /// The ASCII characters the entries cover.
+    /// The ASCII characters the table has entries for.
     ascii_keys: AsciiSet,
 }
 
@@ -108,22 +148,25 @@ pub struct DynTable {
 struct DynEntry {
     /// The character the entry is for.
     ch: char,
-    /// The LaTeX that prints it.
+    /// The LaTeX that prints the character, with nothing around it.
     encoded: String,
-    /// What the protection strategy must know about that LaTeX.
+    /// The hint the protection strategy uses to wrap the value.
     hint: ReplacementProtectionHint,
-    /// What the LaTeX needs in the preamble, if anything.
+    /// The profile of what the value needs in the preamble, or `None` when it
+    /// needs nothing.
     needs: Option<Profile>,
 }
 
 impl DynTable {
-    /// The empty table, which answers for no character at all.
+    /// Creates an empty table, which has no entry for any character.
     pub fn new() -> Self {
         DynTable::default()
     }
 
-    /// Adds the entry for `ch`, replacing the table's entry for it if it had
-    /// one. The value needs nothing in the preamble.
+    /// Adds an entry for `ch`. If the table already has an entry for `ch`, the
+    /// new entry replaces it. The value needs nothing in the document's
+    /// preamble; use [`insert_with_needs`](DynTable::insert_with_needs) for a
+    /// value that does.
     pub fn insert(
         &mut self,
         ch: char,
@@ -133,8 +176,9 @@ impl DynTable {
         self.put(ch, encoded.into(), hint, None);
     }
 
-    /// Adds the entry for `ch`, whose value needs `needs` in the document's
-    /// preamble, replacing the table's entry for it if it had one.
+    /// Adds an entry for `ch` whose value needs `needs` in the document's
+    /// preamble. If the table already has an entry for `ch`, the new entry
+    /// replaces it.
     pub fn insert_with_needs(
         &mut self,
         ch: char,
@@ -145,8 +189,8 @@ impl DynTable {
         self.put(ch, encoded.into(), hint, Some(needs));
     }
 
-    /// The table with the entry for `ch` added, for building one in a single
-    /// expression.
+    /// Returns the table with an entry for `ch` added, for building a table in
+    /// a single expression.
     #[must_use]
     pub fn with_entry(
         mut self,
@@ -158,17 +202,18 @@ impl DynTable {
         self
     }
 
-    /// The number of entries in the table.
+    /// Returns the number of entries in the table.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether the table has no entry at all.
+    /// Returns `true` if the table has no entries.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// The entries of the table, in ascending order of their character.
+    /// Returns an iterator over the table's entries, in ascending order of
+    /// their character.
     pub fn iter(&self) -> impl Iterator<Item = (char, TableEntry<'_>)> + '_ {
         self.entries.iter().map(|entry| (entry.ch, entry.view()))
     }
@@ -194,7 +239,7 @@ impl DynTable {
 }
 
 impl DynEntry {
-    /// The entry as a [`LookupTable`] answers it.
+    /// Returns the entry as a borrowed [`TableEntry`].
     fn view(&self) -> TableEntry<'_> {
         TableEntry { encoded: &self.encoded, hint: self.hint, needs: self.needs.as_ref() }
     }
@@ -221,8 +266,11 @@ impl Rule for DynTable {
     }
 }
 
-/// The replacement a table lookup at `input` gives: the entry's LaTeX for the
-/// character there, with the entry's hint and needs.
+/// Looks the character at `input` up in `table` and returns the matching
+/// replacement, or `Ok(None)` when the table has no entry for that character.
+///
+/// This is the shared body of the [`Rule::apply`] implementation of every
+/// table type in the crate.
 pub(crate) fn apply_lookup<'a, T: LookupTable + ?Sized>(
     table: &'a T,
     input: RuleInput<'a>,
