@@ -293,10 +293,10 @@
 //! keeps the needs and the unknown characters, [`PreambleNeeds`] the needs
 //! alone, and [`NoReport`] nothing at all — under [`NoReport`] and a static
 //! chain the compiler can remove the whole needs machinery from the loop. A
-//! [`PreambleNeeds`] holds one copy of each distinct chunk, orders every
-//! package before every block of declarations, and writes the preamble out
-//! with [`PreambleNeeds::write_preamble`]. It is a reporter itself, so the
-//! fragments of one document can all report into one.
+//! [`PreambleNeeds`] holds one copy of each distinct chunk, and writes the
+//! preamble out with [`PreambleNeeds::write_preamble`], every package before
+//! every block of declarations. It is a reporter itself, so the fragments of
+//! one document can all report into one.
 //!
 //! ```
 //! use untechxt::preamble::PreambleNeeds;
@@ -313,6 +313,57 @@
 //! let mut preamble = String::new();
 //! needs.write_preamble(&mut preamble).unwrap();
 //! assert_eq!(preamble, "\\usepackage{dsfont}\n\\usepackage{nicefrac}\n");
+//! ```
+//!
+//! ## LaTeX engines
+//!
+//! The encoded LaTeX is the same under every LaTeX engine, but the preamble
+//! that it needs can differ between pdfLaTeX, LuaLaTeX and XeLaTeX, because
+//! these engines handle fonts differently. For example, the Cyrillic letters
+//! need the font encoding `T2A`. The package `fontenc` loads `T2A` beside the
+//! font encoding of the document itself, which is `T1` under pdfLaTeX and `TU`
+//! under LuaLaTeX and XeLaTeX. A preamble that names `T1` still compiles under
+//! LuaLaTeX, but LuaLaTeX then drops the Unicode characters that are typed
+//! directly into the document, and reports no error.
+//!
+//! A [`Chunk`] can therefore be a different piece of preamble under different
+//! engines. It holds a list of cases (see [`ChunkCase`]), and each case applies
+//! to a set of engines (see [`EngineSet`]). A chunk needs nothing under an
+//! engine that none of its cases applies to. The builtin chunks already make
+//! these distinctions, and custom chunks can make them too.
+//!
+//! You choose the engine when you write the preamble, in one of two ways:
+//!
+//! - The method [`PreambleNeeds::write_preamble`] takes no engine and writes
+//!   a preamble that compiles under every engine. Where the engines need
+//!   different things, the preamble loads the package `iftex` and tests which
+//!   engine is running. Use this method when you do not know which engine
+//!   will compile the document.
+//! - The method [`PreambleNeeds::write_preamble_for`] takes an [`Engine`] and
+//!   writes the preamble for that engine alone, without any test.
+//!
+//! ```
+//! use untechxt::preamble::Engine;
+//! use untechxt::{default_rules, Encoder};
+//!
+//! let encoder = Encoder::new(default_rules());
+//! let (_, report) = encoder.encode_with_report("я").unwrap();
+//! let needs = report.needs;
+//!
+//! let mut for_lualatex = String::new();
+//! needs.write_preamble_for(Engine::LuaLatex, &mut for_lualatex).unwrap();
+//! assert_eq!(for_lualatex, "\\usepackage[T2A,TU]{fontenc}\n");
+//!
+//! let mut for_every_engine = String::new();
+//! needs.write_preamble(&mut for_every_engine).unwrap();
+//! assert_eq!(for_every_engine, concat!(
+//!     "\\usepackage{iftex}\n",
+//!     "\\iftutex\n",
+//!     "\\usepackage[T2A,TU]{fontenc}\n",
+//!     "\\else\n",
+//!     "\\usepackage[T2A,T1]{fontenc}\n",
+//!     "\\fi\n",
+//! ));
 //! ```
 //!
 //! # Normalization
@@ -460,6 +511,7 @@
 //! [`BracesAround`]: protection::MacroNameProtection::BracesAround
 //! [`BracesAroundAll`]: protection::BracesAroundAll
 //! [`Chunk`]: preamble::Chunk
+//! [`ChunkCase`]: preamble::ChunkCase
 //! [`ChunkPreamble`]: preamble::ChunkPreamble
 //! [`compile_static_table!`]: statictable::compile_static_table!
 //! [`DEFAULT_TABLE`]: builtin::DEFAULT_TABLE
@@ -474,6 +526,8 @@
 //! [`EncodeReporter`]: report::EncodeReporter
 //! [`EncodeReporter::report_unknown_char`]:
 //!     report::EncodeReporter::report_unknown_char
+//! [`Engine`]: preamble::Engine
+//! [`EngineSet`]: preamble::EngineSet
 //! [`FmtOut`]: outbuffer::FmtOut
 //! [`InputNormalizer`]: normalizer::InputNormalizer
 //! [`LocalDynRuleChain`]: rule::LocalDynRuleChain
@@ -490,6 +544,8 @@
 //! [`output_mode`]: protection::StandardProtection::output_mode
 //! [`PreambleNeeds`]: preamble::PreambleNeeds
 //! [`PreambleNeeds::write_preamble`]: preamble::PreambleNeeds::write_preamble
+//! [`PreambleNeeds::write_preamble_for`]:
+//!     preamble::PreambleNeeds::write_preamble_for
 //! [`Profile`]: preamble::Profile
 //! [`protect_names`]: protection::StandardProtection::protect_names
 //! [`ProtectInput`]: protection::ProtectInput

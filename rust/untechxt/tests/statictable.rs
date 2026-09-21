@@ -155,7 +155,7 @@ macro_rules! layout_tests {
                 let encoder = Encoder::new(&TABLE);
                 let (_, report) = encoder.encode_with_report("\u{2102}\u{2133}\u{03B1}").unwrap();
                 let ids: Vec<&str> =
-                    report.needs.chunks().map(|chunk| &*chunk.id).collect();
+                    report.needs.chunks().map(|chunk| chunk.id()).collect();
                 assert_eq!(ids, ["amssymb", "mathrsfs"]);
             }
 

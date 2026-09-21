@@ -13,7 +13,10 @@ rejects or would take special action on, by some LaTeX code that displays
 that character.
 
 This library also reports any preamble definitions/usepackage commands you
-should include to accompany the generated latex-encoded content.  This library
+should include to accompany the generated latex-encoded content.  The encoded
+content is the same under pdfLaTeX, LuaLaTeX and XeLaTeX, and the preamble can
+be written either for one of these engines or in a form that compiles under all
+of them.  This library
 is also highly extensible so you can define your own encoding rules and behavior
 hooks, e.g., for unknown characters.
 
@@ -99,6 +102,14 @@ description.
 
 - `--preamble FILE` writes the required preamble lines to `FILE` instead of
   reporting them on the standard error.
+
+- `--engine` selects the LaTeX engine that the preamble is written for.  The
+  encoded LaTeX is the same for every engine, but the preamble can differ: for
+  instance, Cyrillic letters need `\usepackage[T2A,T1]{fontenc}` under
+  pdfLaTeX and `\usepackage[T2A,TU]{fontenc}` under LuaLaTeX and XeLaTeX.  The
+  default, `any`, writes a preamble that compiles under every engine, and that
+  tests which engine is running where the engines need different things.  The
+  other values are `pdflatex`, `lualatex`, and `xelatex`.
 
 - `-q` prints no report.
 

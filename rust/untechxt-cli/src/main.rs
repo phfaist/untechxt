@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
+use untechxt::preamble::{Engine, PreambleNeeds};
 use untechxt::report::EncodeReport;
 use untechxt::{EncodeError, Encoder};
 
@@ -82,14 +83,15 @@ fn run(cli: &Cli) -> Result<u8, Failure> {
     }
 
     write_output(cli.output.as_deref(), &latex)?;
+    let preamble = preamble_text(&report.needs, cli.engine());
     if let Some(path) = cli.preamble.as_deref() {
-        write_preamble(path, &report)?;
+        write_preamble(path, &preamble)?;
     }
     if !cli.quiet {
         // Printed after the LaTeX has been written: when the output is a pipe
         // that has gone away, the caller learns about that failure rather
         // than about the characters of the input.
-        print_report(&report, cli.preamble.is_some())?;
+        print_report(&report, &preamble, cli.preamble.is_some())?;
     }
     Ok(EXIT_OK)
 }
@@ -156,19 +158,29 @@ fn write_output(file: Option<&Path>, latex: &str) -> Result<(), Failure> {
     }
 }
 
-/// Writes what the output needs in the document preamble to the file that
-/// `--preamble` names.
+/// Returns what the output needs in the document preamble, as the lines to
+/// put there: for `engine` alone, or for every engine when `--engine` named
+/// none. The text is empty when the output needs nothing.
+fn preamble_text(needs: &PreambleNeeds, engine: Option<Engine>) -> String {
+    let mut preamble = String::new();
+    let written = match engine {
+        Some(engine) => needs.write_preamble_for(engine, &mut preamble),
+        None => needs.write_preamble(&mut preamble),
+    };
+    // The library returns the error of the output it writes to, and a
+    // `String` never returns one.
+    written.expect("writing to a string does not fail");
+    preamble
+}
+
+/// Writes `preamble`, which is what the output needs in the document
+/// preamble, to the file that `--preamble` names.
 ///
 /// The file is written whenever the encoding succeeded, even when the output
 /// needs nothing and the file is therefore empty, so that a document can
 /// `\input` the file unconditionally.
-fn write_preamble(path: &Path, report: &EncodeReport) -> Result<(), Failure> {
-    let mut preamble = String::new();
-    report
-        .needs
-        .write_preamble(&mut preamble)
-        .map_err(|error| Failure::failed(format!("{}: {error}", path.display())))?;
-    std::fs::write(path, &preamble)
+fn write_preamble(path: &Path, preamble: &str) -> Result<(), Failure> {
+    std::fs::write(path, preamble)
         .map_err(|error| Failure::failed(format!("{}: {error}", path.display())))
 }
 
@@ -176,10 +188,17 @@ fn write_preamble(path: &Path, report: &EncodeReport) -> Result<(), Failure> {
 ///
 /// The report has two parts, and each part is printed only when there is
 /// something to say. The first part is a warning that lists the characters
-/// that have no known LaTeX representation. The second part is what the
-/// output needs in the document preamble, which is printed only when
-/// `--preamble` named no file for it; `preamble_written` says whether it did.
-fn print_report(report: &EncodeReport, preamble_written: bool) -> Result<(), Failure> {
+/// that have no known LaTeX representation. The second part is `preamble`,
+/// which is what the output needs in the document preamble. It is printed only
+/// when `--preamble` named no file for it; `preamble_written` says whether it
+/// did. The output can need nothing under the engine that `--engine` names
+/// even when it needs something under another engine, and `preamble` is then
+/// empty.
+fn print_report(
+    report: &EncodeReport,
+    preamble: &str,
+    preamble_written: bool,
+) -> Result<(), Failure> {
     let mut message = String::new();
     if !report.unknown_chars.is_empty() {
         let characters: Vec<String> =
@@ -189,13 +208,10 @@ fn print_report(report: &EncodeReport, preamble_written: bool) -> Result<(), Fai
         message.push_str(&characters.join(", "));
         message.push('\n');
     }
-    if !preamble_written && !report.needs.is_empty() {
+    if !preamble_written && !preamble.is_empty() {
         message.push_str(PROGRAM);
         message.push_str(": the output needs the following in the document preamble:\n");
-        report
-            .needs
-            .write_preamble(&mut message)
-            .map_err(|error| Failure::failed(format!("<stderr>: {error}")))?;
+        message.push_str(preamble);
     }
     if message.is_empty() {
         return Ok(());

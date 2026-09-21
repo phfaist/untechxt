@@ -404,6 +404,92 @@ fn the_preamble_file_is_written_even_when_nothing_is_needed() {
     );
 }
 
+/// What `ą я` is encoded as, whatever the engine.
+const ENGINES_STDOUT: &str = "\\k{a} {\\fontencoding{T2A}\\selectfont\\cyrya}\n";
+
+/// The line that the report starts what the preamble needs with.
+const PREAMBLE_NOTE: &str =
+    "untechxt: the output needs the following in the document preamble:\n";
+
+#[test]
+fn the_preamble_is_written_for_every_engine_by_default() {
+    // The ogonek accent needs the font encoding `T1` under pdfLaTeX alone, and
+    // the Cyrillic letter needs `T2A` beside the encoding of the document,
+    // which depends on the engine. The preamble tests the engine for both.
+    let result = run_with_stdin(&[], "ą я\n");
+    assert_eq!(result.stdout, ENGINES_STDOUT);
+    assert_eq!(
+        result.stderr,
+        format!(
+            "{PREAMBLE_NOTE}\\usepackage{{iftex}}\n\\iftutex\n\
+             \\usepackage[T2A,TU]{{fontenc}}\n\\else\n\\usepackage[T1]{{fontenc}}\n\
+             \\usepackage[T2A,T1]{{fontenc}}\n\\fi\n"
+        )
+    );
+    assert_eq!(result.code, 0);
+
+    // `--engine any` is that default, spelled out.
+    let spelled_out = run_with_stdin(&["--engine", "any"], "ą я\n");
+    assert_eq!(spelled_out.stderr, result.stderr);
+}
+
+#[test]
+fn the_engine_option_writes_the_preamble_of_one_engine() {
+    let preamble_for = |engine: &str| {
+        let result = run_with_stdin(&["--engine", engine], "ą я\n");
+        // The LaTeX itself is the same for every engine.
+        assert_eq!(result.stdout, ENGINES_STDOUT, "standard output under {engine}");
+        assert_eq!(result.code, 0, "exit code under {engine}");
+        result.stderr
+    };
+    assert_eq!(
+        preamble_for("pdflatex"),
+        format!(
+            "{PREAMBLE_NOTE}\\usepackage[T1]{{fontenc}}\n\\usepackage[T2A,T1]{{fontenc}}\n"
+        )
+    );
+    let unicode = format!("{PREAMBLE_NOTE}\\usepackage[T2A,TU]{{fontenc}}\n");
+    assert_eq!(preamble_for("lualatex"), unicode);
+    assert_eq!(preamble_for("xelatex"), unicode);
+}
+
+#[test]
+fn the_engine_option_applies_to_the_preamble_file() {
+    let preamble = scratch("preamble-engine.tex");
+    let result = run_with_stdin(
+        &["--engine", "lualatex", "--preamble", argument(&preamble)],
+        "ą я\n",
+    );
+    assert_eq!(result.stdout, ENGINES_STDOUT);
+    assert_eq!(result.stderr, "");
+    assert_eq!(result.code, 0);
+    assert_eq!(
+        std::fs::read_to_string(&preamble).expect("the preamble file was written"),
+        "\\usepackage[T2A,TU]{fontenc}\n"
+    );
+}
+
+#[test]
+fn nothing_is_reported_when_the_engine_needs_nothing() {
+    // LuaLaTeX defines the ogonek accent itself, so the output needs nothing
+    // under it, and the report has nothing to say.
+    let result = run_with_stdin(&["--engine", "lualatex"], "ą\n");
+    assert_eq!(result.stdout, "\\k{a}\n");
+    assert_eq!(result.stderr, "");
+    assert_eq!(result.code, 0);
+
+    let result = run_with_stdin(&["--engine", "pdflatex"], "ą\n");
+    assert_eq!(result.stderr, format!("{PREAMBLE_NOTE}\\usepackage[T1]{{fontenc}}\n"));
+}
+
+#[test]
+fn an_unknown_engine_is_a_usage_error() {
+    let result = run(&["--engine", "tex"]);
+    assert_eq!(result.stdout, "");
+    assert!(result.stderr.contains("--engine"), "{}", result.stderr);
+    assert_eq!(result.code, 2);
+}
+
 // ----------------------------------------------------- the report and -q
 
 #[test]

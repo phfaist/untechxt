@@ -37,7 +37,7 @@ use untechxt::builtin::{DEFAULT_TABLE, DEFAULT_TABLE_NON_ASCII};
 use untechxt::lookuptable::{DynTable, LookupTable};
 use untechxt::normalizer::nfc;
 use untechxt::outbuffer::OutBuffer;
-use untechxt::preamble::{Chunk, ChunkPreamble, PreambleNeeds, Profile};
+use untechxt::preamble::{Chunk, ChunkPreamble, Engine, EngineSet, PreambleNeeds, Profile};
 use untechxt::protection::{
     BracesAroundAll, MacroNameProtection, ProtectInput, ReplacementProtection,
     ReplacementProtectionHint as Hint, StandardProtection, ValueMode,
@@ -920,7 +920,7 @@ fn builtin_chunks() -> Vec<&'static Chunk> {
     let mut chunks: Vec<&'static Chunk> = Vec::new();
     for profile in &PROFILES {
         for chunk in profile.chunks() {
-            if !chunks.iter().any(|held| held.id == chunk.id) {
+            if !chunks.iter().any(|held| held.id() == chunk.id()) {
                 chunks.push(chunk);
             }
         }
@@ -929,35 +929,88 @@ fn builtin_chunks() -> Vec<&'static Chunk> {
 }
 
 /// The chunk table is well formed: distinct identifiers, and LaTeX of the kind
-/// each chunk says it is. (There is no `docs` field and no 64-chunk limit any
-/// more: a chunk is documented where it is defined, and a set of chunks is a
-/// list, not a bit field.)
+/// each case of each chunk says it is. (There is no `docs` field and no
+/// 64-chunk limit any more: a chunk is documented where it is defined, and a
+/// set of chunks is a list, not a bit field.)
 #[test]
 fn the_chunk_table_is_well_formed() {
     let chunks = builtin_chunks();
-    let ids: BTreeSet<&str> = chunks.iter().map(|chunk| &*chunk.id).collect();
+    let ids: BTreeSet<&str> = chunks.iter().map(|chunk| chunk.id()).collect();
     assert_eq!(ids.len(), chunks.len(), "the chunk identifiers are distinct");
     assert_eq!(chunks.len(), 20);
     for chunk in chunks {
-        assert!(!chunk.id.is_empty());
-        match &chunk.preamble {
-            ChunkPreamble::Package(name) => {
-                assert!(chunk.is_package());
-                assert_eq!(&*chunk.id, &**name, "a plain package chunk is named after it");
-                assert!(!name.contains(['{', '}', '\\', '[', ']']), "{}", chunk.id);
-            }
-            ChunkPreamble::PackageWithOptions(name, options) => {
-                assert!(chunk.is_package());
-                assert!(!name.is_empty() && !options.is_empty(), "{}", chunk.id);
-                assert!(!name.contains(['{', '}', '\\', '[', ']']), "{}", chunk.id);
-            }
-            ChunkPreamble::Snippet(latex) => {
-                assert!(!chunk.is_package());
-                assert!(latex.starts_with('\\'), "{}: the snippet is LaTeX", chunk.id);
-                assert!(!latex.ends_with('\n'), "{}: no newline at the end", chunk.id);
+        let id = chunk.id();
+        assert!(!id.is_empty());
+        assert!(!chunk.cases().is_empty(), "{id}: a chunk with no case needs nothing");
+        for case in chunk.cases() {
+            assert!(!case.engines().is_empty(), "{id}: a case for no engine is never read");
+            match case.preamble() {
+                ChunkPreamble::Package(name) => {
+                    assert!(case.preamble().is_package());
+                    assert_eq!(id, &**name, "a plain package chunk is named after it");
+                    assert!(!name.contains(['{', '}', '\\', '[', ']']), "{id}");
+                }
+                ChunkPreamble::PackageWithOptions(name, options) => {
+                    assert!(case.preamble().is_package());
+                    assert!(!name.is_empty() && !options.is_empty(), "{id}");
+                    assert!(!name.contains(['{', '}', '\\', '[', ']']), "{id}");
+                }
+                ChunkPreamble::Snippet(latex) => {
+                    assert!(!case.preamble().is_package());
+                    assert!(latex.starts_with('\\'), "{id}: the snippet is LaTeX");
+                    assert!(!latex.ends_with('\n'), "{id}: no newline at the end");
+                }
             }
         }
     }
+}
+
+/// The engines the tests walk: every engine the crate knows.
+const ENGINES: [Engine; 3] = [Engine::PdfLatex, Engine::LuaLatex, Engine::XeLatex];
+
+/// The chunks that differ between LaTeX engines are the `fontenc` ones, and
+/// what they differ in is the encoding of the document, which every one of
+/// them lists last: `T1` under pdfLaTeX, and `TU` under LuaLaTeX and XeLaTeX,
+/// where a document in `T1` loses the Unicode characters typed into it. The
+/// `T1` chunk itself is nothing under those two engines, whose `TU` encoding
+/// declares the commands of `T1`. Every other chunk is one case for every
+/// engine.
+#[test]
+fn the_fontenc_chunks_list_the_encoding_of_the_document_last_under_every_engine() {
+    let mut per_engine: Vec<&str> = Vec::new();
+    for chunk in builtin_chunks() {
+        let id = chunk.id();
+        if !id.starts_with("fontenc-") {
+            assert_eq!(chunk.cases().len(), 1, "{id}");
+            assert_eq!(chunk.cases()[0].engines(), EngineSet::ALL, "{id}");
+            continue;
+        }
+        per_engine.push(id);
+        for engine in ENGINES {
+            let document_encoding = if engine == Engine::PdfLatex { "T1" } else { "TU" };
+            match chunk.preamble_for(engine) {
+                Some(ChunkPreamble::PackageWithOptions(name, options)) => {
+                    assert_eq!(&**name, "fontenc", "{id}");
+                    assert_eq!(options.split(',').next_back(), Some(document_encoding), "{id}");
+                    // The encoding the chunk is there for is the same one
+                    // under every engine.
+                    let own = id.trim_start_matches("fontenc-").to_uppercase();
+                    assert_eq!(options.split(',').next(), Some(&*own), "{id}");
+                }
+                None => assert!(id == "fontenc-t1" && engine != Engine::PdfLatex, "{id}"),
+                other => panic!("{id} is {other:?} under {engine:?}"),
+            }
+        }
+    }
+    assert_eq!(per_engine, [
+        "fontenc-t2a",
+        "fontenc-t1",
+        "fontenc-x2",
+        "fontenc-t2b",
+        "fontenc-t2c",
+        "fontenc-ot2",
+        "fontenc-t2d"
+    ]);
 }
 
 /// A snippet chunk's declarations may call into what a package chunk loads — a
@@ -968,7 +1021,8 @@ fn the_chunk_table_is_well_formed() {
 /// declares something in, either the LaTeX kernel declares the encoding itself,
 /// or the snippet does, or every profile naming the snippet also names a
 /// `fontenc` chunk loaded with that encoding — so that a snippet added with its
-/// package forgotten fails here, not in LaTeX.
+/// package forgotten fails here, not in LaTeX. This holds under each engine on
+/// its own, since both the snippet and the package may depend on the engine.
 #[test]
 fn a_snippet_chunk_never_appears_without_the_package_chunks_it_calls_into() {
     // The font encodings LaTeX declares by itself, in `fonttext.ltx` and
@@ -987,8 +1041,10 @@ fn a_snippet_chunk_never_appears_without_the_package_chunks_it_calls_into() {
     }
 
     let mut dependent: Vec<&str> = Vec::new();
-    for chunk in builtin_chunks() {
-        let ChunkPreamble::Snippet(latex) = &chunk.preamble else { continue };
+    for (chunk, engine) in
+        builtin_chunks().into_iter().flat_map(|chunk| ENGINES.map(|engine| (chunk, engine)))
+    {
+        let Some(ChunkPreamble::Snippet(latex)) = chunk.preamble_for(engine) else { continue };
         let own: BTreeSet<&str> = latex
             .lines()
             .filter_map(|line| line.strip_prefix("\\DeclareFontEncoding{"))
@@ -1002,23 +1058,27 @@ fn a_snippet_chunk_never_appears_without_the_package_chunks_it_calls_into() {
         if needed.is_empty() {
             continue;
         }
-        dependent.push(&chunk.id);
+        if !dependent.contains(&chunk.id()) {
+            dependent.push(chunk.id());
+        }
         for (number, profile) in PROFILES.iter().enumerate() {
-            if !profile.chunks().iter().any(|held| held.id == chunk.id) {
+            if !profile.chunks().iter().any(|held| held.id() == chunk.id()) {
                 continue;
             }
             for enc in &needed {
-                let loaded = profile.chunks().iter().any(|held| match &held.preamble {
-                    ChunkPreamble::PackageWithOptions(name, options) => {
-                        &**name == "fontenc" && options.split(',').any(|option| option == *enc)
-                    }
-                    ChunkPreamble::Package(_) | ChunkPreamble::Snippet(_) => false,
-                });
+                let loaded =
+                    profile.chunks().iter().any(|held| match held.preamble_for(engine) {
+                        Some(ChunkPreamble::PackageWithOptions(name, options)) => {
+                            &**name == "fontenc"
+                                && options.split(',').any(|option| option == *enc)
+                        }
+                        _ => false,
+                    });
                 assert!(
                     loaded,
-                    "profile {number} names the snippet chunk {} but no `fontenc` chunk \
-                     loaded with the `{enc}` encoding its declarations read from",
-                    chunk.id
+                    "profile {number} names the snippet chunk {} but, under {engine:?}, no \
+                     `fontenc` chunk loaded with the `{enc}` encoding its declarations read from",
+                    chunk.id()
                 );
             }
         }
@@ -1040,7 +1100,7 @@ fn every_profile_names_chunks_that_exist_and_no_set_appears_twice() {
     assert!(PROFILES.len() <= 256, "a profile index is one byte");
     let mut seen: BTreeSet<Vec<&str>> = BTreeSet::new();
     for (number, profile) in PROFILES.iter().enumerate() {
-        let ids: Vec<&str> = profile.chunks().iter().map(|chunk| &*chunk.id).collect();
+        let ids: Vec<&str> = profile.chunks().iter().map(|chunk| chunk.id()).collect();
         assert!(seen.insert(ids), "profile {number} is a set another profile already has");
     }
 }
@@ -1055,7 +1115,7 @@ fn chunk_ids_of(ch: char) -> Vec<String> {
     if let Some(profile) = entry.needs {
         needs.include(profile);
     }
-    needs.chunks().map(|chunk| chunk.id.to_string()).collect()
+    needs.chunks().map(|chunk| chunk.id().to_string()).collect()
 }
 
 /// Every profile of the table is pinned here by a character that needs it: the
@@ -1120,14 +1180,15 @@ fn the_corrected_entries_name_their_chunks() {
         pinned.iter().map(|(_, chunks)| chunks.to_vec()).collect();
     let all_sets: BTreeSet<Vec<&str>> = PROFILES
         .iter()
-        .map(|profile| profile.chunks().iter().map(|chunk| &*chunk.id).collect())
+        .map(|profile| profile.chunks().iter().map(|chunk| chunk.id()).collect())
         .collect();
     assert_eq!(pinned_sets, all_sets, "every profile of the table is pinned by a character here");
 }
 
-/// A set of needs unions the profiles put into it, lists its chunks with the
-/// packages before the snippets and each group in first-seen order — the old
-/// order was the chunk table's — and writes them as `\usepackage` lines.
+/// A set of needs unions the profiles put into it, lists its chunks in
+/// first-seen order — the old order was the chunk table's — and writes them as
+/// `\usepackage` lines, the packages before the snippets, for one engine or
+/// for every engine.
 #[test]
 fn a_set_of_needs_unions_profiles_and_keeps_the_table_s_order() {
     let profile_of = |ch: char| DEFAULT_TABLE.lookup(ch).unwrap().needs.unwrap();
@@ -1147,25 +1208,57 @@ fn a_set_of_needs_unions_profiles_and_keeps_the_table_s_order() {
     needs.include(&PROFILES[0]);
     assert!(!needs.is_empty());
     assert_eq!(
-        needs.chunks().map(|chunk| &*chunk.id).collect::<Vec<_>>(),
+        needs.chunks().map(|chunk| chunk.id()).collect::<Vec<_>>(),
         ["fontenc-t2a", "nicefrac", "dsfont"]
     );
+    // For pdfLaTeX, the preamble is the one this crate wrote before it knew
+    // about engines.
     let mut preamble = String::new();
-    needs.write_preamble(&mut preamble).unwrap();
+    needs.write_preamble_for(Engine::PdfLatex, &mut preamble).unwrap();
     assert_eq!(
         preamble,
         "\\usepackage[T2A,T1]{fontenc}\n\\usepackage{nicefrac}\n\\usepackage{dsfont}\n"
     );
+    // For LuaLaTeX, the encoding of the document stays `TU`.
+    let mut preamble = String::new();
+    needs.write_preamble_for(Engine::LuaLatex, &mut preamble).unwrap();
+    assert_eq!(
+        preamble,
+        "\\usepackage[T2A,TU]{fontenc}\n\\usepackage{nicefrac}\n\\usepackage{dsfont}\n"
+    );
+    // For every engine, the chunk that differs is inside a test.
+    let mut preamble = String::new();
+    needs.write_preamble(&mut preamble).unwrap();
+    assert_eq!(
+        preamble,
+        concat!(
+            "\\usepackage{iftex}\n",
+            "\\iftutex\n",
+            "\\usepackage[T2A,TU]{fontenc}\n",
+            "\\else\n",
+            "\\usepackage[T2A,T1]{fontenc}\n",
+            "\\fi\n",
+            "\\usepackage{nicefrac}\n",
+            "\\usepackage{dsfont}\n",
+        )
+    );
     assert_eq!(format!("{needs:?}"), r#"["fontenc-t2a", "nicefrac", "dsfont"]"#);
 
-    // A snippet chunk is written after every package, whatever order it went in.
+    // A snippet chunk is written after every package, whatever order it went
+    // in, while the chunks themselves stay in first-seen order.
     let mut mixed = PreambleNeeds::new();
     mixed.include(profile_of('҂'));
     mixed.include(profile_of('⅓'));
     assert_eq!(
-        mixed.chunks().map(|chunk| &*chunk.id).collect::<Vec<_>>(),
-        ["fontenc-t2d", "nicefrac", "cyrillic-thousands"]
+        mixed.chunks().map(|chunk| chunk.id()).collect::<Vec<_>>(),
+        ["fontenc-t2d", "cyrillic-thousands", "nicefrac"]
     );
+    for engine in ENGINES {
+        assert_eq!(
+            mixed.preambles_for(engine).map(|(chunk, _)| chunk.id()).collect::<Vec<_>>(),
+            ["fontenc-t2d", "nicefrac", "cyrillic-thousands"]
+        );
+    }
 
     let mut other = PreambleNeeds::new();
     other.include(profile_of('𝟙'));
@@ -1173,7 +1266,7 @@ fn a_set_of_needs_unions_profiles_and_keeps_the_table_s_order() {
     joined.merge(&other);
     assert_ne!(joined, needs);
     joined.merge(&needs);
-    assert_eq!(joined.chunks().map(|chunk| &*chunk.id).collect::<Vec<_>>(), [
+    assert_eq!(joined.chunks().map(|chunk| chunk.id()).collect::<Vec<_>>(), [
         "dsfont",
         "fontenc-t2a",
         "nicefrac"
@@ -1188,7 +1281,7 @@ fn the_encoder_reports_what_the_text_needs() {
     assert!(report.needs.is_empty());
 
     let (_, report) = defaults().encode_with_report("𝟙 ⅓ я").unwrap();
-    assert_eq!(report.needs.chunks().map(|chunk| &*chunk.id).collect::<Vec<_>>(), [
+    assert_eq!(report.needs.chunks().map(|chunk| chunk.id()).collect::<Vec<_>>(), [
         "dsfont",
         "nicefrac",
         "fontenc-t2a"
@@ -1397,7 +1490,7 @@ fn a_run_time_profile_from_a_user_rule_reaches_the_report() {
     let u = Encoder::new(RuleChain::new((emoji, &DEFAULT_TABLE)));
     let (out, report) = u.encode_with_report("\u{1F600} \u{2102}").unwrap();
     assert_eq!(out, r"\emoji{grinning-face} \ensuremath{\mathbb{C}}");
-    assert_eq!(report.needs.chunks().map(|chunk| &*chunk.id).collect::<Vec<_>>(), [
+    assert_eq!(report.needs.chunks().map(|chunk| chunk.id()).collect::<Vec<_>>(), [
         "emoji", "amssymb"
     ]);
     let mut preamble = String::new();

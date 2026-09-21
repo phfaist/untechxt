@@ -25,12 +25,21 @@
 //! index is what the compiled table stores. Adding a profile means adding its
 //! constant here and naming that constant in the entries of the table.
 //!
+//! A chunk states one case per set of LaTeX engines when the engines need
+//! different things, and a single case otherwise (see the struct [`Chunk`]).
+//! Before you add a chunk, compile a sample of the entries that need the
+//! chunk under pdfLaTeX and under LuaLaTeX, and read the log of each run. A
+//! preamble can compile without an error and still be wrong. For example, a
+//! `fontenc` chunk that lists `T1` last compiles under LuaLaTeX, but
+//! LuaLaTeX then drops the Unicode characters of the document, and only a
+//! "Missing character" line of the log says so.
+//!
 //! Every command that a snippet chunk defines is named `\UnxT…`, a prefix
 //! this crate reserves, and so is every font identifier that a snippet
 //! declares. A document may therefore load any packages it likes beside these
 //! chunks: nothing here redefines a command of the kernel or of a package.
 
-use crate::preamble::{Chunk, Profile};
+use crate::preamble::{Chunk, ChunkCase, ChunkPreamble, EngineSet, Profile};
 use crate::statictable::ProfileIndex;
 
 // ------------------------------------------------------------------ chunks
@@ -72,34 +81,69 @@ const BBM_CHUNK: Chunk = Chunk::package("bbm");
 /// The `T1` font encoding, in which the letters of the European languages
 /// that `OT1` has no place for are declared: the ogonek accent `\k`, the
 /// guillemets, `\DH`, `\TH`, `\NG`, `\DJ` and the low quotation marks.
-const FONTENC_T1_CHUNK: Chunk = Chunk::package_with_options("fontenc-t1", "fontenc", "T1");
+///
+/// LuaLaTeX and XeLaTeX need nothing here. Their own font encoding, `TU`,
+/// declares every one of these commands, and loading `T1` would make `T1` the
+/// encoding of the document (see the macro `fontenc_chunk!` below).
+const FONTENC_T1_CHUNK: Chunk = Chunk::for_engines(
+    "fontenc-t1",
+    EngineSet::UNICODE.complement(),
+    ChunkPreamble::package_with_options("fontenc", "T1"),
+);
+
+/// The chunk `$id` that loads the font encoding `$encoding` with the package
+/// `fontenc`, beside the encoding of the document itself.
+///
+/// The package `fontenc` makes the last encoding of its option list the
+/// encoding of the document, so the chunk lists the document's own encoding
+/// last, and Latin text keeps its usual fonts. That encoding depends on the
+/// engine. It is `T1` under pdfLaTeX. It is `TU` under LuaLaTeX and XeLaTeX,
+/// where a document in the encoding `T1` would lose the Unicode characters
+/// that are typed directly into it.
+///
+/// The two cases need a static list to borrow (see [`Chunk::from_static`]),
+/// which this macro declares inside the chunk's own initializer.
+macro_rules! fontenc_chunk {
+    ($id:literal, $encoding:literal) => {{
+        static CASES: [ChunkCase; 2] = [
+            ChunkCase::for_engines(
+                EngineSet::UNICODE,
+                ChunkPreamble::package_with_options("fontenc", concat!($encoding, ",TU")),
+            ),
+            ChunkCase::otherwise(ChunkPreamble::package_with_options(
+                "fontenc",
+                concat!($encoding, ",T1"),
+            )),
+        ];
+        Chunk::from_static($id, &CASES)
+    }};
+}
 
 /// The `T2A` Cyrillic font encoding, in which the Cyrillic letter commands of
-/// the modern languages are declared, beside `T1`, which stays the document's
-/// own encoding so that Latin text keeps its usual fonts.
-const FONTENC_T2A_CHUNK: Chunk = Chunk::package_with_options("fontenc-t2a", "fontenc", "T2A,T1");
+/// the modern languages are declared.
+const FONTENC_T2A_CHUNK: Chunk = fontenc_chunk!("fontenc-t2a", "T2A");
 
 /// The `X2` font encoding, which holds every Cyrillic letter of the `T2`
 /// encodings together, and the letters of the minority languages none of them
-/// has; beside `T1`, which stays the document's own encoding.
-const FONTENC_X2_CHUNK: Chunk = Chunk::package_with_options("fontenc-x2", "fontenc", "X2,T1");
+/// has.
+const FONTENC_X2_CHUNK: Chunk = fontenc_chunk!("fontenc-x2", "X2");
 
 /// The `T2B` Cyrillic font encoding, in which the letters of the Caucasian
-/// and Siberian languages `X2` has no place for are declared; beside `T1`.
-const FONTENC_T2B_CHUNK: Chunk = Chunk::package_with_options("fontenc-t2b", "fontenc", "T2B,T1");
+/// and Siberian languages `X2` has no place for are declared.
+const FONTENC_T2B_CHUNK: Chunk = fontenc_chunk!("fontenc-t2b", "T2B");
 
 /// The `T2C` Cyrillic font encoding, in which the older Slavonic letters are
-/// declared, the semisoft sign and er with tick among them; beside `T1`.
-const FONTENC_T2C_CHUNK: Chunk = Chunk::package_with_options("fontenc-t2c", "fontenc", "T2C,T1");
+/// declared, the semisoft sign and er with tick among them.
+const FONTENC_T2C_CHUNK: Chunk = fontenc_chunk!("fontenc-t2c", "T2C");
 
 /// The `OT2` Cyrillic font encoding, the seven-bit one, which is where fita
-/// is declared; beside `T1`.
-const FONTENC_OT2_CHUNK: Chunk = Chunk::package_with_options("fontenc-ot2", "fontenc", "OT2,T1");
+/// is declared.
+const FONTENC_OT2_CHUNK: Chunk = fontenc_chunk!("fontenc-ot2", "OT2");
 
 /// The `T2D` Old Church Slavonic font encoding, in which the letters of the
 /// Slavonic alphabet that no modern encoding has are declared, omega, ksi,
-/// psi, koppa and the yuses among them; beside `T1`.
-const FONTENC_T2D_CHUNK: Chunk = Chunk::package_with_options("fontenc-t2d", "fontenc", "T2D,T1");
+/// psi, koppa and the yuses among them.
+const FONTENC_T2D_CHUNK: Chunk = fontenc_chunk!("fontenc-t2d", "T2D");
 
 /// The math alphabet `\UnxTBbold`, declared from the `bbold` font family, for
 /// the double-struck digits `bbm`'s font has no glyph for. The package
@@ -229,7 +273,7 @@ macro_rules! builtin_profiles {
         ///
         /// let chunks = PROFILES[AMSSYMB.0 as usize].chunks();
         /// assert_eq!(chunks.len(), 1);
-        /// assert_eq!(&*chunks[0].id, "amssymb");
+        /// assert_eq!(chunks[0].id(), "amssymb");
         /// ```
         pub static PROFILES: [Profile; count!($($name)*)] =
             [$(Profile::from_static(&$chunks)),*];

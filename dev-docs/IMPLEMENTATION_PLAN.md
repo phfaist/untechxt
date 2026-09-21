@@ -218,6 +218,16 @@ math versus text mode, or of streaming output; this library adds all three.
 - A **chunk** is one piece of preamble: one package load or one snippet of
   declarations, with a stable string id. A **profile** is the set of chunks
   one encoded string needs. Same chunk id means same chunk.
+- A chunk can be a different piece of preamble under different **LaTeX
+  engines** (pdfLaTeX, LuaLaTeX, XeLaTeX). The encoded LaTeX is the same under
+  every engine; only the preamble differs. A chunk is a list of **cases**,
+  each a piece of preamble with the set of engines it applies to. The first
+  case that applies to an engine wins, and a chunk with no case for an engine
+  needs nothing under that engine (no "otherwise" case is required). The
+  chunk id does not depend on the engine.
+- The needs accumulator is engine-agnostic: it collects chunks by id. The
+  engine is chosen only when the preamble is written, either one engine or a
+  portable preamble that tests the engine with the package `iftex`.
 - Static tables store a `u8` profile index per entry, but what a rule hands
   out is a plain reference, `Option<&'a Profile>`. There are no runtime id
   spaces and no registries, so tables from independent crates cannot clash
@@ -406,7 +416,8 @@ src/
                              StandardProtection, MacroNameProtection,
                              OutputMode, ModeWrapper, BracesAroundAll
   preamble/
-    mod.rs                   Chunk, ChunkPreamble
+    mod.rs                   Chunk, ChunkCase, ChunkPreamble
+    engine.rs     (private)  Engine, EngineSet; re-exported from `preamble`
     profile.rs    (private)  Profile, PreambleNeeds; re-exported from
                              `preamble`
   report.rs                  EncodeReporter, NoReport, EncodeReport
@@ -716,15 +727,40 @@ nothing, `Fail` returns `EncodeError::UnknownChar`, `ReplaceWith(s)` writes
 `\ensuremath{\langle}\texttt{U+XXXX}\ensuremath{\rangle}` with the code point
 in uppercase hex, at least four digits.
 
-**Needs**: `PreambleNeeds::chunks()` yields all package chunks first, then
-all snippet chunks, each group in first-seen order (a snippet may call into
-a package of its own profile). `write_preamble` writes one line per package
-chunk (`\usepackage{name}` or `\usepackage[options]{name}`) and then the
-snippets; it does **not** merge options. That is safe for the builtin chunks:
-the only package loaded under several chunks is `fontenc`, which is written
-to be loaded repeatedly without an option clash, and every builtin `fontenc`
-chunk lists `T1` last, so the document's default encoding stays `T1`. Merging
-is left to consumers that have their own package machinery.
+**Needs**: `PreambleNeeds::chunks()` yields the chunks in first-seen order.
+Whether a chunk is a package or a snippet can depend on the engine, so the
+writing order is decided per engine: `preambles_for(engine)` yields
+`(&Chunk, &ChunkPreamble)` for every chunk that needs something under
+`engine`, all packages first, then all snippets, each group in first-seen
+order (a snippet may call into a package of its own profile).
+
+`write_preamble_for(engine, out)` writes those pieces, one line per package
+(`\usepackage{name}` or `\usepackage[options]{name}`) and then the snippets,
+with no test of the engine. For pdfLaTeX this is exactly what the crate wrote
+before it knew about engines.
+
+`write_preamble(out)` writes a portable preamble, in the same order. A chunk
+that resolves to the same thing under every known engine is written as it
+is. A chunk that differs is written inside a test of the package `iftex`, and
+the preamble then starts with `\usepackage{iftex}`:
+
+- LuaLaTeX and XeLaTeX agree, pdfLaTeX differs: `\iftutex A \else B \fi`.
+- One of LuaLaTeX or XeLaTeX differs from the two others: `\ifluatex` or
+  `\ifxetex`, in the same shape.
+- All three differ: `\ifluatex A \else\ifxetex B \else C \fi\fi`.
+
+The pdfLaTeX resolution always goes in the last `\else`, so an engine the
+crate does not know reads what pdfLaTeX reads; the `\else` is left out when
+pdfLaTeX needs nothing. Neighboring chunks with the same split share one
+test. Known limitation: TeX skips the other engines' branches unexecuted, so
+an engine-specific snippet must not both declare a `\newif` and use it.
+
+Neither method merges options. That is safe for the builtin chunks: the only
+package loaded under several chunks is `fontenc`, which is written to be
+loaded repeatedly without an option clash, and every builtin `fontenc` chunk
+lists the document's own encoding last (`T1` under pdfLaTeX, `TU` under
+LuaLaTeX and XeLaTeX). Merging is left to consumers that have their own
+package machinery.
 
 ### Encoder loop
 
@@ -744,21 +780,65 @@ is left to consumers that have their own package machinery.
 ### Needs data model
 
 ```rust
-// Chunk and ChunkPreamble derive Debug, Clone, PartialEq, Eq, Hash
-// (`Cow<'static, [Chunk]>` requires `Chunk: Clone`).
-pub struct Chunk { pub id: Cow<'static, str>, pub preamble: ChunkPreamble }
+#[non_exhaustive]
+pub enum Engine { PdfLatex, LuaLatex, XeLatex }   // the one engine a preamble
+                                                  // is written for
+pub struct EngineSet(/* u8 bit set, opaque */);   // where a case applies
+impl EngineSet {
+    pub const ALL, EMPTY, PDFLATEX, LUALATEX, XELATEX: Self;
+    pub const UNICODE: Self;                      // LuaLaTeX and XeLaTeX
+    pub const fn of(engine: Engine) -> Self;
+    pub const fn union(self, other: Self) -> Self;
+    pub const fn complement(self) -> Self;
+    pub const fn contains(self, engine: Engine) -> bool;
+    pub const fn is_empty(self) -> bool;
+}
+// Outside `const` contexts: `|` between engines and sets in any combination,
+// `!` on both, `From<Engine> for EngineSet`. `ALL` and every complement
+// include the bits reserved for engines of later versions.
+
+// ChunkPreamble and ChunkCase derive Debug, Clone, PartialEq, Eq, Hash. Chunk
+// derives Debug and Clone, and compares and hashes by id and `cases()`, so
+// that how a chunk was built does not matter.
+// (`Cow<'static, [Chunk]>` requires `Chunk: Clone`.)
 pub enum ChunkPreamble {
     Package(Cow<'static, str>),                                // name
     PackageWithOptions(Cow<'static, str>, Cow<'static, str>),  // name, options
     Snippet(Cow<'static, str>),                                // raw preamble lines
 }
-impl Chunk {   // const constructors for static data
+impl ChunkPreamble {   // const constructors for static data
+    pub const fn package(name: &'static str) -> Self;
+    pub const fn package_with_options(name: &'static str,
+                                      options: &'static str) -> Self;
+    pub const fn snippet(text: &'static str) -> Self;
+    pub const fn is_package(&self) -> bool;   // what orders a written preamble
+}
+pub struct ChunkCase { /* private: EngineSet, ChunkPreamble */ }
+impl ChunkCase {
+    pub const fn for_engines(engines: EngineSet, preamble: ChunkPreamble) -> Self;
+    pub const fn otherwise(preamble: ChunkPreamble) -> Self;   // EngineSet::ALL
+    pub const fn engines(&self) -> EngineSet;
+    pub const fn preamble(&self) -> &ChunkPreamble;
+}
+pub struct Chunk { /* private: id, and one inline ChunkCase or a
+                      Cow<'static, [ChunkCase]> */ }
+impl Chunk {
+    // The same under every engine (one case, `EngineSet::ALL`):
     pub const fn package(name: &'static str) -> Self;          // id = name
     pub const fn package_with_options(id: &'static str, name: &'static str,
                                       options: &'static str) -> Self;
     pub const fn snippet(id: &'static str, text: &'static str) -> Self;
-    pub const fn is_package(&self) -> bool;  // a package chunk, not a snippet:
-}                                            // what orders `chunks()`
+    // Dependent on the engine:
+    pub const fn for_engines(id: &'static str, engines: EngineSet,
+                             preamble: ChunkPreamble) -> Self; // one case
+    pub const fn from_static(id: &'static str,
+                             cases: &'static [ChunkCase]) -> Self;
+    pub fn new(id: impl Into<Cow<'static, str>>, cases: Vec<ChunkCase>) -> Self;
+    pub fn id(&self) -> &str;
+    pub fn cases(&self) -> &[ChunkCase];
+    // First case whose set contains `engine`; `None` = nothing needed.
+    pub fn preamble_for(&self, engine: Engine) -> Option<&ChunkPreamble>;
+}
 pub struct Profile { /* Cow<'static, [Chunk]> */ }
 impl Profile {
     pub const fn from_static(chunks: &'static [Chunk]) -> Self;
@@ -769,9 +849,11 @@ impl Profile {
 pub struct ProfileIndex(pub u8);   // in `statictable`: index into a table's own
                                    // profile array
 impl ProfileIndex { pub const NONE: ProfileIndex; }   // the reserved 0
-pub struct PreambleNeeds { /* two Vec<Chunk>, packages and snippets */ }
+pub struct PreambleNeeds { /* one Vec<Chunk>, in first-seen order */ }
 // new(), include(&Profile), merge(&PreambleNeeds), is_empty(), chunks(),
+// preambles_for(Engine) -> impl Iterator<Item = (&Chunk, &ChunkPreamble)>,
 // write_preamble<O: OutBuffer + ?Sized>(&self, &mut O) -> Result<(), BoxError>,
+// write_preamble_for<O: ..>(&self, Engine, &mut O) -> Result<(), BoxError>,
 // impl EncodeReporter, manual Debug (the chunk ids, in order).
 // Distinctness is a linear scan over the ids: the sets are a few chunks long.
 ```
@@ -779,10 +861,31 @@ pub struct PreambleNeeds { /* two Vec<Chunk>, packages and snippets */ }
 - The builtin chunks and profiles are the 20 chunks and 21 profiles of
   `initial-rust-port/src/tables.rs` (`CHUNKS`, `PROFILES`, and the constants
   below them), restructured: `\usepackage{amssymb}` becomes
-  `Chunk::package("amssymb")`; `\usepackage[T2A,T1]{fontenc}` becomes
-  `Chunk::package_with_options("fontenc-t2a", "fontenc", "T2A,T1")`; snippets
-  keep their ids. Structured options let a consumer merge several `fontenc`
-  requests into one `\usepackage` line.
+  `Chunk::package("amssymb")`; snippets keep their ids. Structured options
+  let a consumer merge several `fontenc` requests into one `\usepackage`
+  line.
+- The `fontenc` chunks are the builtin chunks that depend on the engine.
+  `fontenc` makes the last encoding of its option list the document's
+  encoding, so `\usepackage[T2A,T1]{fontenc}` under LuaLaTeX or XeLaTeX
+  switches the document from `TU` to `T1`. That compiles, but the Unicode
+  characters typed directly into the document are then lost, with only a
+  "Missing character" line in the log (checked: `ß` printed as `SS`, and
+  `ł — “ ” €` printed nothing). Each Cyrillic chunk is therefore two cases,
+  `ENC,TU` for `EngineSet::UNICODE` and `ENC,T1` otherwise (the macro
+  `fontenc_chunk!`), and `fontenc-t1` is a single case for
+  `EngineSet::UNICODE.complement()`, because `TU` declares the commands of
+  `T1` itself. The Cyrillic spellings select their encoding around
+  themselves, and LuaTeX and XeTeX read the 8-bit fonts, so the same encoded
+  LaTeX works under all three engines. Every other builtin chunk was checked
+  to work unchanged under LuaLaTeX.
+- Storage: `const` constructors cannot build a borrowed slice from their
+  arguments (`E0716`), and a slice literal of cases passed as an argument is
+  not promoted (`E0493`, drop glue again). So a single case is stored inline,
+  which is what the plain constructors and `for_engines` use, and two or more
+  cases borrow a `static` (or own a `Vec`), mirroring `Profile::from_static`
+  and `Profile::new`. The operator `|` cannot be called in a `const` item
+  (`E0015`), which is why `EngineSet` has named constants and `const fn
+  union` and `complement` beside the operators.
 - Profile index 0 is reserved for "no needs". `PROFILES[0]` is a real, empty
   `Profile`, so that indices equal array positions; a table lookup maps
   index 0 to `None` without consulting the array. The builtin profiles are

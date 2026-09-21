@@ -1,9 +1,9 @@
 //! The command line: what `untechxt --help` prints, and which value of the
 //! library each argument stands for.
 //!
-//! Every argument here selects one rule, one replacement protection strategy
-//! or one unknown-character policy, and the methods of [`Cli`] are that
-//! mapping. The mapping lives in this module, and not in `main`, so that it is
+//! Every argument here selects one rule, one replacement protection strategy,
+//! one unknown-character policy or one LaTeX engine, and the methods of
+//! [`Cli`] are that mapping. The mapping lives in this module, and not in `main`, so that it is
 //! stated once and tested here.
 //!
 //! The enumerated values are restated as local [`ValueEnum`] types rather than
@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
 use untechxt::builtin::{BuiltinTable, DEFAULT_TABLE_NON_ASCII};
 use untechxt::outbuffer::OutBuffer;
+use untechxt::preamble::Engine;
 use untechxt::protection::{
     BracesAroundAll, MacroNameProtection, ProtectInput, ReplacementProtection,
     StandardProtection,
@@ -105,6 +106,12 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub preamble: Option<PathBuf>,
 
+    /// The LaTeX engine that the preamble is written for, both in the file of
+    /// --preamble and in the report on standard error. The LaTeX itself is
+    /// the same for every engine.
+    #[arg(long, value_enum, default_value_t = EngineArg::Any, value_name = "ENGINE")]
+    pub engine: EngineArg,
+
     /// Print no report on standard error. A failure is still reported.
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
@@ -159,6 +166,18 @@ impl Cli {
         }
     }
 
+    /// Returns the LaTeX engine that these arguments write the preamble for,
+    /// or `None` for a preamble that compiles under every engine, which is
+    /// the default.
+    pub fn engine(&self) -> Option<Engine> {
+        match self.engine {
+            EngineArg::Any => None,
+            EngineArg::Pdflatex => Some(Engine::PdfLatex),
+            EngineArg::Lualatex => Some(Engine::LuaLatex),
+            EngineArg::Xelatex => Some(Engine::XeLatex),
+        }
+    }
+
     /// Returns the policy that these arguments apply to a character that has
     /// no known LaTeX representation.
     pub fn unknown_chars(&self) -> UnknownCharPolicy {
@@ -210,6 +229,25 @@ pub enum UnknownCharArg {
     /// Write the code point of the character, as \texttt{U+0E18} between
     /// angle brackets.
     Unihex,
+}
+
+/// The values of the `--engine` option. Each of them names what compiles the
+/// document, which decides what the preamble contains. For example, the
+/// Cyrillic letters need the font encoding T2A beside T1 under pdfLaTeX, and
+/// beside TU under LuaLaTeX and XeLaTeX.
+// The variants are single words so that clap names the values `pdflatex`,
+// `lualatex` and `xelatex`, which are the names of the programs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum EngineArg {
+    /// Every engine. Where the engines need different things, the preamble
+    /// loads the package iftex and tests which engine is running.
+    Any,
+    /// pdfLaTeX, which includes LaTeX writing a DVI file.
+    Pdflatex,
+    /// LuaLaTeX.
+    Lualatex,
+    /// XeLaTeX.
+    Xelatex,
 }
 
 /// The rule that the command line selected, which is the encoding table that
@@ -321,6 +359,7 @@ mod tests {
         assert!(cli.files.is_empty());
         assert_eq!(cli.output, None);
         assert_eq!(cli.preamble, None);
+        assert_eq!(cli.engine(), None);
         assert!(!cli.quiet);
     }
 
@@ -415,10 +454,20 @@ mod tests {
     }
 
     #[test]
+    fn every_engine_reaches_its_engine() {
+        let engine = |value: &str| parse(&["--engine", value]).engine();
+        assert_eq!(engine("any"), None);
+        assert_eq!(engine("pdflatex"), Some(Engine::PdfLatex));
+        assert_eq!(engine("lualatex"), Some(Engine::LuaLatex));
+        assert_eq!(engine("xelatex"), Some(Engine::XeLatex));
+    }
+
+    #[test]
     fn an_unknown_value_is_a_usage_error() {
         assert!(Cli::try_parse_from(["untechxt", "--unknown-char-policy", "shrug"]).is_err());
         assert!(
             Cli::try_parse_from(["untechxt", "--replacement-protection", "curly"]).is_err()
         );
+        assert!(Cli::try_parse_from(["untechxt", "--engine", "tex"]).is_err());
     }
 }

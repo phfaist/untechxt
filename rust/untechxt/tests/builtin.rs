@@ -11,7 +11,7 @@ use untechxt::builtin::{
     BuiltinTable, DEFAULT_TABLE, DEFAULT_TABLE_ASCII_SPECIALS, DEFAULT_TABLE_NON_ASCII,
 };
 use untechxt::lookuptable::{DynTable, LookupTable};
-use untechxt::preamble::{ChunkPreamble, Profile};
+use untechxt::preamble::{ChunkPreamble, Engine, Profile};
 use untechxt::protection::{ReplacementProtectionHint as Hint, ValueTermination};
 use untechxt::rule::{Rule, RuleChain};
 use untechxt::statictable::ProfileIndex;
@@ -173,7 +173,7 @@ fn what_a_character_needs_ends_up_in_the_report() {
     // U+2102 DOUBLE-STRUCK CAPITAL C is spelled `\mathbb{C}`, of `amssymb`.
     let (encoded, report) = encoder.encode_with_report("\u{2102}").unwrap();
     assert_eq!(encoded, r"\ensuremath{\mathbb{C}}");
-    let ids: Vec<&str> = report.needs.chunks().map(|chunk| &*chunk.id).collect();
+    let ids: Vec<&str> = report.needs.chunks().map(|chunk| chunk.id()).collect();
     assert_eq!(ids, ["amssymb"]);
 
     let mut preamble = String::new();
@@ -191,7 +191,7 @@ fn a_snippet_profile_reports_its_package_first() {
     // declared out of it: the package comes before the declarations.
     let encoder = Encoder::new(&DEFAULT_TABLE);
     let (_, report) = encoder.encode_with_report("\u{0482}").unwrap();
-    let ids: Vec<&str> = report.needs.chunks().map(|chunk| &*chunk.id).collect();
+    let ids: Vec<&str> = report.needs.chunks().map(|chunk| chunk.id()).collect();
     assert_eq!(ids, ["fontenc-t2d", "cyrillic-thousands"]);
 }
 
@@ -215,7 +215,7 @@ fn every_profile_index_the_entries_name_is_in_range() {
 fn no_two_builtin_profiles_hold_the_same_chunk_set() {
     let sets: Vec<BTreeSet<&str>> = PROFILES
         .iter()
-        .map(|profile| profile.chunks().iter().map(|chunk| &*chunk.id).collect())
+        .map(|profile| profile.chunks().iter().map(|chunk| chunk.id()).collect())
         .collect();
     for (i, one) in sets.iter().enumerate() {
         for (j, other) in sets.iter().enumerate().skip(i + 1) {
@@ -229,10 +229,10 @@ fn the_chunk_identifiers_are_distinct_and_name_one_chunk_each() {
     let mut chunks: Vec<(&str, String)> = Vec::new();
     for profile in &PROFILES {
         for chunk in profile.chunks() {
-            let form = format!("{:?}", chunk.preamble);
-            match chunks.iter().find(|(id, _)| *id == &*chunk.id) {
-                Some((_, held)) => assert_eq!(held, &form, "{} means two things", chunk.id),
-                None => chunks.push((&chunk.id, form)),
+            let form = format!("{:?}", chunk.cases());
+            match chunks.iter().find(|(id, _)| *id == chunk.id()) {
+                Some((_, held)) => assert_eq!(held, &form, "{} means two things", chunk.id()),
+                None => chunks.push((chunk.id(), form)),
             }
         }
     }
@@ -241,12 +241,13 @@ fn the_chunk_identifiers_are_distinct_and_name_one_chunk_each() {
 
 #[test]
 fn every_unxt_command_the_entries_write_is_declared_by_the_entry_s_own_profile() {
-    /// The declarations of the snippet chunks of one profile, run together.
-    fn declarations(profile: Option<&Profile>) -> String {
+    /// The declarations of the snippet chunks of one profile under `engine`,
+    /// run together.
+    fn declarations(profile: Option<&Profile>, engine: Engine) -> String {
         profile.into_iter().flat_map(|profile| profile.chunks()).fold(
             String::new(),
             |mut all, chunk| {
-                if let ChunkPreamble::Snippet(text) = &chunk.preamble {
+                if let Some(ChunkPreamble::Snippet(text)) = chunk.preamble_for(engine) {
                     all.push_str(text);
                     all.push('\n');
                 }
@@ -257,20 +258,30 @@ fn every_unxt_command_the_entries_write_is_declared_by_the_entry_s_own_profile()
 
     let mut used: BTreeSet<String> = BTreeSet::new();
     for (ch, entry) in DEFAULT_TABLE.iter() {
-        let declared = declarations(entry.needs);
-        let mut rest = entry.encoded;
-        while let Some(at) = rest.find("\\UnxT") {
-            let tail = &rest[at + 1..];
-            let end = tail.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(tail.len());
-            let command = &tail[..end];
-            // The chunk that declares the command must be one the entry's own
-            // profile holds: a profile that leaves it out is a silent bug.
-            assert!(
-                declared.contains(&format!("{{\\{command}}}")),
-                "{ch:?} writes \\{command}, which its profile does not declare"
-            );
-            used.insert(command.to_string());
-            rest = &tail[end..];
+        if !entry.encoded.contains("\\UnxT") {
+            continue;
+        }
+        // The declaration must be there under every engine, since a chunk may
+        // be nothing under some of them.
+        for engine in [Engine::PdfLatex, Engine::LuaLatex, Engine::XeLatex] {
+            let declared = declarations(entry.needs, engine);
+            let mut rest = entry.encoded;
+            while let Some(at) = rest.find("\\UnxT") {
+                let tail = &rest[at + 1..];
+                let end =
+                    tail.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(tail.len());
+                let command = &tail[..end];
+                // The chunk that declares the command must be one the entry's
+                // own profile holds: a profile that leaves it out is a silent
+                // bug.
+                assert!(
+                    declared.contains(&format!("{{\\{command}}}")),
+                    "{ch:?} writes \\{command}, which its profile does not declare \
+                     under {engine:?}"
+                );
+                used.insert(command.to_string());
+                rest = &tail[end..];
+            }
         }
     }
     assert_eq!(used.len(), 36);

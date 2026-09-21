@@ -9,7 +9,9 @@ use std::rc::Rc;
 use untechxt::lookuptable::{DynTable, LookupTable, TableRule};
 use untechxt::normalizer::{nfc, NoNormalization};
 use untechxt::outbuffer::{FmtOut, OutBuffer};
-use untechxt::preamble::{Chunk, ChunkPreamble, PreambleNeeds, Profile};
+use untechxt::preamble::{
+    Chunk, ChunkCase, ChunkPreamble, Engine, EngineSet, PreambleNeeds, Profile,
+};
 use untechxt::protection::{
     BracesAroundAll, MacroNameProtection, ModeWrapper, OutputMode, ProtectInput,
     ReplacementProtection, ReplacementProtectionHint as Hint, StandardProtection, ValueTermination,
@@ -339,7 +341,7 @@ fn a_mode_wrapper_reports_what_it_needs_itself() {
 
     let (out, report) = encoder.encode_with_report("\u{2014}").unwrap();
     assert_eq!(out, r"\text{\textemdash}");
-    assert_eq!(report.needs.chunks().map(|c| &*c.id).collect::<Vec<_>>(), ["amsmath"]);
+    assert_eq!(report.needs.chunks().map(|c| c.id()).collect::<Vec<_>>(), ["amsmath"]);
 }
 
 #[test]
@@ -605,10 +607,11 @@ fn the_needs_of_a_value_reach_the_report_once() {
 
     let (out, report) = encoder.encode_with_report("\u{1d7d9}\u{1d7d9} \u{44f}").unwrap();
     assert_eq!(out, r"\ensuremath{\UnxTBbold{1}}\ensuremath{\UnxTBbold{1}} {\cyrya}");
-    // Packages first, then snippets, each in first-seen order.
+    // The chunks are in first-seen order. The preamble is what is written
+    // packages first (see `a_preamble_is_written_packages_first`).
     assert_eq!(
-        report.needs.chunks().map(|chunk| &*chunk.id).collect::<Vec<_>>(),
-        ["amssymb", "fontenc-t2a", "bbold-alphabet"]
+        report.needs.chunks().map(|chunk| chunk.id()).collect::<Vec<_>>(),
+        ["bbold-alphabet", "amssymb", "fontenc-t2a"]
     );
 }
 
@@ -641,7 +644,7 @@ fn a_profile_built_at_run_time_reaches_the_report() {
     };
     let (out, report) = Encoder::new(rule).encode_with_report("\u{2153}").unwrap();
     assert_eq!(out, r"\nicefrac{1}{3}");
-    assert_eq!(report.needs.chunks().map(|c| &*c.id).collect::<Vec<_>>(), ["nicefrac"]);
+    assert_eq!(report.needs.chunks().map(|c| c.id()).collect::<Vec<_>>(), ["nicefrac"]);
 }
 
 #[test]
@@ -663,25 +666,51 @@ fn a_preamble_is_written_packages_first() {
             "\\DeclareMathAlphabet{\\UnxTBbold}{U}{bbold}{m}{n}\n",
         )
     );
-    assert_eq!(format!("{needs:?}"), r#"["amssymb", "fontenc-t2a", "bbold-alphabet"]"#);
+    assert_eq!(format!("{needs:?}"), r#"["bbold-alphabet", "amssymb", "fontenc-t2a"]"#);
+    // Every chunk here is the same under every engine, so the preamble of one
+    // engine is the same text, and the pieces come packages first.
+    for engine in [Engine::PdfLatex, Engine::LuaLatex, Engine::XeLatex] {
+        let mut for_engine = String::new();
+        needs.write_preamble_for(engine, &mut for_engine).unwrap();
+        assert_eq!(for_engine, preamble);
+        assert_eq!(
+            needs.preambles_for(engine).map(|(chunk, _)| chunk.id()).collect::<Vec<_>>(),
+            ["amssymb", "fontenc-t2a", "bbold-alphabet"]
+        );
+    }
 
     let mut other = PreambleNeeds::new();
     other.include(&AMSMATH);
     other.merge(&needs);
     assert_eq!(
-        other.chunks().map(|c| &*c.id).collect::<Vec<_>>(),
-        ["amsmath", "amssymb", "fontenc-t2a", "bbold-alphabet"]
+        other.chunks().map(|c| c.id()).collect::<Vec<_>>(),
+        ["amsmath", "bbold-alphabet", "amssymb", "fontenc-t2a"]
     );
 }
 
 #[test]
 fn a_chunk_states_what_it_is() {
-    assert!(Chunk::package("amssymb").is_package());
-    assert!(Chunk::package_with_options("fontenc-t2a", "fontenc", "T2A,T1").is_package());
-    assert!(!Chunk::snippet("id", "text").is_package());
+    assert!(ChunkPreamble::package("amssymb").is_package());
+    assert!(ChunkPreamble::package_with_options("fontenc", "T2A,T1").is_package());
+    assert!(!ChunkPreamble::snippet("text").is_package());
+
+    // A chunk of the three plain constructors is one case, which applies to
+    // every engine.
+    let chunk = Chunk::package_with_options("fontenc-t2a", "fontenc", "T2A,T1");
+    assert_eq!(chunk.id(), "fontenc-t2a");
+    assert_eq!(chunk.cases().len(), 1);
+    assert_eq!(chunk.cases()[0].engines(), EngineSet::ALL);
     assert_eq!(
-        Chunk::package_with_options("fontenc-t2a", "fontenc", "T2A,T1").preamble,
-        ChunkPreamble::PackageWithOptions("fontenc".into(), "T2A,T1".into())
+        chunk.cases()[0].preamble(),
+        &ChunkPreamble::PackageWithOptions("fontenc".into(), "T2A,T1".into())
+    );
+    for engine in [Engine::PdfLatex, Engine::LuaLatex, Engine::XeLatex] {
+        assert_eq!(chunk.preamble_for(engine), Some(chunk.cases()[0].preamble()));
+    }
+    assert_eq!(Chunk::package("amssymb").id(), "amssymb");
+    assert_eq!(
+        Chunk::snippet("id", "text").preamble_for(Engine::PdfLatex),
+        Some(&ChunkPreamble::Snippet("text".into()))
     );
 }
 
@@ -692,7 +721,7 @@ fn a_preamble_needs_is_itself_a_reporter() {
     let mut out = String::new();
     let mut needs = PreambleNeeds::new();
     Encoder::new(table).encode_into("\u{44f}", &mut out, &mut needs).unwrap();
-    assert_eq!(needs.chunks().map(|c| &*c.id).collect::<Vec<_>>(), ["fontenc-t2a"]);
+    assert_eq!(needs.chunks().map(|c| c.id()).collect::<Vec<_>>(), ["fontenc-t2a"]);
 }
 
 #[test]
@@ -702,7 +731,7 @@ fn a_profile_is_reported_again_only_when_it_is_not_the_one_last_reported() {
     struct EveryCall(Vec<String>);
     impl EncodeReporter for EveryCall {
         fn report_needs(&mut self, profile: &Profile) {
-            self.0.push(profile.chunks()[0].id.to_string());
+            self.0.push(profile.chunks()[0].id().to_string());
         }
     }
 
@@ -731,6 +760,292 @@ fn a_profile_is_reported_again_only_when_it_is_not_the_one_last_reported() {
     encoder.encode_into("\u{44f}", &mut String::new(), &mut report).unwrap();
     encoder.encode_into("\u{44f}", &mut String::new(), &mut report).unwrap();
     assert_eq!(report.0, ["fontenc-t2a", "fontenc-t2a"]);
+}
+
+// ----------------------------------------------------------- LaTeX engines
+
+const ENGINES: [Engine; 3] = [Engine::PdfLatex, Engine::LuaLatex, Engine::XeLatex];
+
+/// The `T2A` font encoding beside the encoding of the document, which is `TU`
+/// under LuaLaTeX and XeLaTeX and `T1` under every other engine.
+static T2A_CASES: [ChunkCase; 2] = [
+    ChunkCase::for_engines(
+        EngineSet::UNICODE,
+        ChunkPreamble::package_with_options("fontenc", "T2A,TU"),
+    ),
+    ChunkCase::otherwise(ChunkPreamble::package_with_options("fontenc", "T2A,T1")),
+];
+const T2A: Chunk = Chunk::from_static("fontenc-t2a", &T2A_CASES);
+
+/// The `T1` font encoding, which LuaLaTeX and XeLaTeX do not need.
+const T1: Chunk = Chunk::for_engines(
+    "fontenc-t1",
+    EngineSet::UNICODE.complement(),
+    ChunkPreamble::package_with_options("fontenc", "T1"),
+);
+
+/// The set of needs that holds `chunks`.
+fn needs_of(chunks: Vec<Chunk>) -> PreambleNeeds {
+    let mut needs = PreambleNeeds::new();
+    needs.include(&Profile::new(chunks));
+    needs
+}
+
+/// The preamble of `needs` that compiles under every engine.
+fn portable(needs: &PreambleNeeds) -> String {
+    let mut preamble = String::new();
+    needs.write_preamble(&mut preamble).unwrap();
+    preamble
+}
+
+/// The preamble of `needs` for `engine` alone.
+fn preamble_for(needs: &PreambleNeeds, engine: Engine) -> String {
+    let mut preamble = String::new();
+    needs.write_preamble_for(engine, &mut preamble).unwrap();
+    preamble
+}
+
+#[test]
+fn an_engine_set_is_built_from_constants_methods_and_operators() {
+    // The methods are what a `const` item can use.
+    const BOTH: EngineSet = EngineSet::LUALATEX.union(EngineSet::XELATEX);
+    const EIGHT_BIT: EngineSet = EngineSet::UNICODE.complement();
+    assert_eq!(BOTH, EngineSet::UNICODE);
+    assert!(EIGHT_BIT.contains(Engine::PdfLatex));
+    assert!(!EIGHT_BIT.contains(Engine::LuaLatex));
+    assert!(!EIGHT_BIT.contains(Engine::XeLatex));
+    for engine in ENGINES {
+        assert!(EngineSet::ALL.contains(engine));
+        assert!(!EngineSet::EMPTY.contains(engine));
+        assert!(EngineSet::of(engine).contains(engine));
+        assert_eq!(EngineSet::from(engine), EngineSet::of(engine));
+    }
+    assert!(EngineSet::EMPTY.is_empty());
+    assert!(!EngineSet::PDFLATEX.is_empty());
+    assert_eq!(EngineSet::ALL.complement(), EngineSet::EMPTY);
+    // A complement includes the engines of later versions, so it is more than
+    // the known engines outside the set.
+    assert_ne!(EIGHT_BIT, EngineSet::PDFLATEX);
+
+    // The operators are for everywhere else, and take engines as well as sets.
+    assert_eq!(Engine::LuaLatex | Engine::XeLatex, EngineSet::UNICODE);
+    assert_eq!(EngineSet::LUALATEX | Engine::XeLatex, EngineSet::UNICODE);
+    assert_eq!(Engine::LuaLatex | EngineSet::XELATEX, EngineSet::UNICODE);
+    assert_eq!(EngineSet::LUALATEX | EngineSet::XELATEX, EngineSet::UNICODE);
+    assert_eq!(!EngineSet::UNICODE, EIGHT_BIT);
+    assert_eq!(!Engine::PdfLatex | Engine::PdfLatex, EngineSet::ALL);
+
+    assert_eq!(format!("{:?}", EngineSet::ALL), "EngineSet::ALL");
+    assert_eq!(format!("{:?}", EngineSet::EMPTY), "EngineSet::EMPTY");
+    assert_eq!(format!("{:?}", EngineSet::UNICODE), "EngineSet(LuaLatex | XeLatex)");
+    assert_eq!(format!("{EIGHT_BIT:?}"), "EngineSet(!(LuaLatex | XeLatex))");
+}
+
+#[test]
+fn the_first_case_that_applies_to_the_engine_is_what_the_chunk_is() {
+    let t1 = ChunkPreamble::package_with_options("fontenc", "T2A,T1");
+    let tu = ChunkPreamble::package_with_options("fontenc", "T2A,TU");
+    assert_eq!(T2A.id(), "fontenc-t2a");
+    assert_eq!(T2A.cases(), &T2A_CASES);
+    assert_eq!(T2A.preamble_for(Engine::PdfLatex), Some(&t1));
+    assert_eq!(T2A.preamble_for(Engine::LuaLatex), Some(&tu));
+    assert_eq!(T2A.preamble_for(Engine::XeLatex), Some(&tu));
+
+    // The order of the cases is what decides: with the case of every engine
+    // first, no later case is ever reached.
+    let shadowed = Chunk::new("fontenc-t2a", vec![
+        ChunkCase::otherwise(t1.clone()),
+        ChunkCase::for_engines(EngineSet::UNICODE, tu.clone()),
+    ]);
+    for engine in ENGINES {
+        assert_eq!(shadowed.preamble_for(engine), Some(&t1));
+    }
+}
+
+#[test]
+fn a_chunk_with_no_case_for_the_engine_needs_nothing_under_it() {
+    // No `otherwise` case is needed: the engines that no case names need
+    // nothing, and nothing is written for the chunk under them.
+    assert!(T1.preamble_for(Engine::PdfLatex).is_some());
+    assert_eq!(T1.preamble_for(Engine::LuaLatex), None);
+    assert_eq!(T1.preamble_for(Engine::XeLatex), None);
+
+    let needs = needs_of(vec![T1]);
+    assert!(!needs.is_empty(), "the set holds the chunk, whatever the engine");
+    assert_eq!(preamble_for(&needs, Engine::PdfLatex), "\\usepackage[T1]{fontenc}\n");
+    assert_eq!(preamble_for(&needs, Engine::LuaLatex), "");
+    assert_eq!(needs.preambles_for(Engine::XeLatex).count(), 0);
+    assert_eq!(
+        portable(&needs),
+        "\\usepackage{iftex}\n\\iftutex\n\\else\n\\usepackage[T1]{fontenc}\n\\fi\n"
+    );
+
+    // A chunk with no case at all needs nothing anywhere.
+    let nothing = needs_of(vec![Chunk::new("nothing", vec![])]);
+    assert_eq!(portable(&nothing), "");
+}
+
+#[test]
+fn chunks_are_equal_by_identifier_and_cases_however_they_were_created() {
+    use std::collections::HashSet;
+
+    let borrowed = Chunk::package("tipa");
+    let owned = Chunk::new(String::from("tipa"), vec![ChunkCase::otherwise(
+        ChunkPreamble::Package(String::from("tipa").into()),
+    )]);
+    assert_eq!(borrowed, owned);
+    assert_eq!(HashSet::from([borrowed.clone(), owned]).len(), 1);
+    assert_ne!(borrowed, Chunk::package("tipx"));
+    assert_ne!(
+        borrowed,
+        Chunk::for_engines("tipa", EngineSet::PDFLATEX, ChunkPreamble::package("tipa"))
+    );
+    assert_eq!(T2A, Chunk::new("fontenc-t2a", T2A_CASES.to_vec()));
+}
+
+#[test]
+fn a_portable_preamble_tests_the_engine_where_the_engines_differ() {
+    let needs = needs_of(vec![
+        Chunk::snippet("declaration", r"\newcommand\UnxTtest{}"),
+        Chunk::package("amssymb"),
+        T1,
+        T2A,
+        Chunk::package("tipa"),
+    ]);
+    // The packages come first. The two chunks that differ between the Unicode
+    // engines and the others are neighbors, so they share one test.
+    assert_eq!(
+        portable(&needs),
+        concat!(
+            "\\usepackage{iftex}\n",
+            "\\usepackage{amssymb}\n",
+            "\\iftutex\n",
+            "\\usepackage[T2A,TU]{fontenc}\n",
+            "\\else\n",
+            "\\usepackage[T1]{fontenc}\n",
+            "\\usepackage[T2A,T1]{fontenc}\n",
+            "\\fi\n",
+            "\\usepackage{tipa}\n",
+            "\\newcommand\\UnxTtest{}\n",
+        )
+    );
+    // The preamble of one engine is the same lines without the test.
+    assert_eq!(
+        preamble_for(&needs, Engine::PdfLatex),
+        concat!(
+            "\\usepackage{amssymb}\n",
+            "\\usepackage[T1]{fontenc}\n",
+            "\\usepackage[T2A,T1]{fontenc}\n",
+            "\\usepackage{tipa}\n",
+            "\\newcommand\\UnxTtest{}\n",
+        )
+    );
+    for engine in [Engine::LuaLatex, Engine::XeLatex] {
+        assert_eq!(
+            preamble_for(&needs, engine),
+            concat!(
+                "\\usepackage{amssymb}\n",
+                "\\usepackage[T2A,TU]{fontenc}\n",
+                "\\usepackage{tipa}\n",
+                "\\newcommand\\UnxTtest{}\n",
+            )
+        );
+    }
+    // The chunks themselves stay in first-seen order.
+    assert_eq!(
+        needs.chunks().map(|chunk| chunk.id()).collect::<Vec<_>>(),
+        ["declaration", "amssymb", "fontenc-t1", "fontenc-t2a", "tipa"]
+    );
+}
+
+#[test]
+fn a_portable_preamble_uses_the_test_that_fits_the_engines() {
+    let package = |name: &'static str| ChunkPreamble::package(name);
+
+    // One engine apart from the two others is one test. What pdfLaTeX needs is
+    // what is written where the test is false, and nothing is written there
+    // when pdfLaTeX needs nothing.
+    let lua = Chunk::for_engines("lua", EngineSet::LUALATEX, package("luacode"));
+    assert_eq!(
+        portable(&needs_of(vec![lua.clone()])),
+        "\\usepackage{iftex}\n\\ifluatex\n\\usepackage{luacode}\n\\fi\n"
+    );
+    let xe = Chunk::for_engines("xe", EngineSet::XELATEX, package("xltxtra"));
+    assert_eq!(
+        portable(&needs_of(vec![xe])),
+        "\\usepackage{iftex}\n\\ifxetex\n\\usepackage{xltxtra}\n\\fi\n"
+    );
+    let not_lua = Chunk::for_engines("not-lua", !Engine::LuaLatex, package("other"));
+    assert_eq!(
+        portable(&needs_of(vec![not_lua.clone()])),
+        "\\usepackage{iftex}\n\\ifluatex\n\\else\n\\usepackage{other}\n\\fi\n"
+    );
+
+    // Three different cases are two tests, one inside the other.
+    let each = Chunk::new("each", vec![
+        ChunkCase::for_engines(EngineSet::LUALATEX, package("for-lua")),
+        ChunkCase::for_engines(EngineSet::XELATEX, package("for-xe")),
+        ChunkCase::otherwise(package("for-the-others")),
+    ]);
+    assert_eq!(
+        portable(&needs_of(vec![each])),
+        concat!(
+            "\\usepackage{iftex}\n",
+            "\\ifluatex\n",
+            "\\usepackage{for-lua}\n",
+            "\\else\\ifxetex\n",
+            "\\usepackage{for-xe}\n",
+            "\\else\n",
+            "\\usepackage{for-the-others}\n",
+            "\\fi\\fi\n",
+        )
+    );
+
+    // Neighbors share a test only when they differ in the same way.
+    assert_eq!(
+        portable(&needs_of(vec![lua, not_lua, T1])),
+        concat!(
+            "\\usepackage{iftex}\n",
+            "\\ifluatex\n",
+            "\\usepackage{luacode}\n",
+            "\\else\n",
+            "\\usepackage{other}\n",
+            "\\fi\n",
+            "\\iftutex\n",
+            "\\else\n",
+            "\\usepackage[T1]{fontenc}\n",
+            "\\fi\n",
+        )
+    );
+}
+
+#[test]
+fn a_chunk_may_be_a_package_under_one_engine_and_a_snippet_under_another() {
+    let mixed = Chunk::new("mixed", vec![
+        ChunkCase::for_engines(EngineSet::UNICODE, ChunkPreamble::snippet(r"\UnxTsetup")),
+        ChunkCase::otherwise(ChunkPreamble::package("eight-bit")),
+    ]);
+    let needs = needs_of(vec![Chunk::snippet("first", r"\UnxTfirst"), mixed]);
+
+    // Under each engine the chunk is written in the group of its kind.
+    assert_eq!(preamble_for(&needs, Engine::PdfLatex), "\\usepackage{eight-bit}\n\\UnxTfirst\n");
+    assert_eq!(preamble_for(&needs, Engine::LuaLatex), "\\UnxTfirst\n\\UnxTsetup\n");
+    // And so it is in the preamble for every engine: once among the packages,
+    // once among the snippets.
+    assert_eq!(
+        portable(&needs),
+        concat!(
+            "\\usepackage{iftex}\n",
+            "\\iftutex\n",
+            "\\else\n",
+            "\\usepackage{eight-bit}\n",
+            "\\fi\n",
+            "\\UnxTfirst\n",
+            "\\iftutex\n",
+            "\\UnxTsetup\n",
+            "\\fi\n",
+        )
+    );
 }
 
 // ------------------------------------------------------------------ output
@@ -878,7 +1193,7 @@ fn a_user_table_becomes_a_rule_through_table_rule() {
     let (out, report) =
         Encoder::new(TableRule(OneEntry)).encode_with_report("a\u{2014}").unwrap();
     assert_eq!(out, r"a{\textemdash}");
-    assert_eq!(report.needs.chunks().map(|c| &*c.id).collect::<Vec<_>>(), ["amsmath"]);
+    assert_eq!(report.needs.chunks().map(|c| c.id()).collect::<Vec<_>>(), ["amsmath"]);
 }
 
 // ------------------------------------------------------------------- debug
