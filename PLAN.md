@@ -32,27 +32,35 @@ math versus text mode, or of streaming output; this library adds all three.
 
 - `CLAUDE.md`: working conventions. Read it first and follow it.
 - `initial-rust-port/`: a quick-and-dirty earlier Rust port, extracted from
-  another project (FLM), where it was the crate `flm-latexencode`. It is
-  **git-ignored and present only locally**. It has no `Cargo.toml` and is not
-  built. It is reference material, and three parts of it are carried over:
+  another project (FLM), where it was the crate `flm-latexencode`. 
+  It has no `Cargo.toml`, so it cannot be built or run: its behavior can only
+  be read. It is reference material, and three parts of it are carried over
+  into tracked files (steps 3 and 4), after which the repository no longer
+  depends on it:
   - `src/tables.rs`: the data. 1549 hand-curated entries
     `(char, latex, PROFILE), // UNICODE NAME`, plus 20 preamble chunks, 21
-    profiles, the provenance notes, a documented list of 16 corrections over
-    pylatexenc, and two MIT license notices (pylatexenc and latexcodec) that
-    must travel with the data.
-  - `tests/latexencode.rs` and
-    `tests/goldens/latexencode/uni_chars_test_previous.txt`: the behavioral
-    spec. The golden file has one line per character, in the form
-    `0x%04X [UNICODE NAME]   |<char>|`; the test rebuilds each input line
-    from the golden itself, encodes it, and compares byte for byte
-    (`UPDATE_GOLDEN=1` rewrites the file). The golden was produced under
-    pylatexenc's `braces-almost-all` protection and the `fail` unknown-char
-    policy.
+    profiles, the provenance notes, a documented table of corrections over
+    pylatexenc ("Departures from pylatexenc"), and two MIT license notices
+    (pylatexenc and latexcodec) that must travel with the data.
+  - `tests/latexencode.rs` and `tests/goldens/latexencode/` (the golden file
+    `uni_chars_test_previous.txt` and a `README.md`): the behavioral spec.
+    Each golden line is the **encoded** form of an input line built with the
+    format string `"0x%04X %-50s    |%s|\n"`, where the `%-50s` field is
+    `[UNICODE NAME]` and the last field is the character itself. So the
+    stored lines look like `0x0023 [NUMBER SIGN]  ...  |{\#}|`. The old test
+    recovers the code point and the name from each golden line, rebuilds the
+    input line, encodes it, and compares byte for byte (`UPDATE_GOLDEN=1`
+    rewrites the file). The golden was produced with NFC normalization,
+    pylatexenc's `braces-almost-all` protection, and the `fail` unknown-char
+    policy. 21 of its lines only encode because NFC maps the character onto
+    one that has a table entry.
   - `src/lib.rs` and `src/needs.rs`: the old encoder loop and needs model
     (for reference), and documentation prose worth migrating.
 - `src/`: an exploratory prototype of the new design. **It does not compile**
   and contains leftover pasted fragments. Treat it as a statement of intent
-  and rewrite it. Two things in it are kept as they are in spirit:
+  and rewrite it: replace the files that the module layout names, delete
+  prototype files it does not name. Files ending in `~` are git-ignored
+  editor backups; leave them alone. Two things are kept as they are in spirit:
   `src/statictable.rs` (three static table layouts built by `const fn`s and a
   `macro_rules!` macro) and `src/builtin/default_table.rs` (a verbatim copy of
   the initial port's 1549 entries, not yet migrated).
@@ -93,9 +101,12 @@ math versus text mode, or of streaming output; this library adds all three.
 ### Rules
 
 - One dyn-compatible trait, `Rule: Debug`, with
-  `apply(&self, input: RuleInput<'_>) -> RuleResult<'a>` where
+  `apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a>` where
   `RuleResult<'a> = Result<Option<EncodedReplacement<'a>>, BoxError>`:
-  `Ok(None)` means "does not match here", `Err` aborts the encoding.
+  `Ok(None)` means "does not match here", `Err` aborts the encoding. The
+  shared lifetime lets a result borrow from the rule **or from the input**
+  (a rule that passes existing LaTeX through returns a slice of the input
+  without allocating).
   First match wins; there is no longest-match logic. All positions and
   lengths are byte offsets.
 - `Debug` is the only supertrait. `Send + Sync` are deliberately **not**
@@ -118,6 +129,9 @@ math versus text mode, or of streaming output; this library adds all three.
 - Closures become rules through `rule_fn(..)`. A blanket
   `impl<F: Fn(..)> Rule for F` is impossible: it overlaps with the `&R` and
   `Box<R>` forwarding impls, because `&F` and `Box<F>` are themselves `Fn`.
+  A closure rule can return owned strings, literals, or slices of the input,
+  but it cannot lend out its own captures; a rule that lends from its own
+  state implements `Rule` on a struct.
 - Rules are fallible so that foreign-language callbacks (Python, JS) can
   propagate exceptions. Error payloads are
   `BoxError = Box<dyn Error + Send + Sync>` (the ecosystem convention; a JS
@@ -129,8 +143,9 @@ math versus text mode, or of streaming output; this library adds all three.
   (instead of implementing `Rule` on bare tuples) leaves room for chain-level
   options later, such as "continue with the next rule if one fails". Do not
   implement such options now.
-- `L: RuleList`, a sealed helper trait implemented for tuples up to arity 12
-  (static dispatch, unrolled), `[R; N]`, and `Vec<R>`. Bare tuples and `Vec`s
+- `L: RuleList`, a sealed helper trait implemented for tuples of arity 0 to
+  12 (static dispatch, unrolled; the empty tuple is the empty chain),
+  `[R; N]`, and `Vec<R>`. Bare tuples and `Vec`s
   are not rules themselves, so there is exactly one way to build a chain.
 - `&R`, `Box<R>`, and `Option<R>` forward `Rule` (`Option` gives a rule that
   can be switched off without changing the chain's type).
@@ -172,6 +187,10 @@ math versus text mode, or of streaming output; this library adds all three.
     `{\pm}` turns an operator into an ordinary symbol.
 - `write_protected` receives the reporter, because a mode wrapper may itself
   need a package (`\text{..}` needs amsmath).
+- `ReplacementProtection` has a generic method and is therefore not
+  dyn-compatible. That is accepted: `StandardProtection` is an ordinary
+  struct whose fields can be set at run time (which is what language bindings
+  need), and a fully custom strategy is a compile-time choice.
 - pylatexenc's `braces-all` and `braces-almost-all` modes (version-1
   compatibility) are not standard options. `BracesAroundAll` exists as a
   separate strategy object and doubles as the example of a custom strategy.
@@ -229,7 +248,9 @@ math versus text mode, or of streaming output; this library adds all three.
   no counts, no positions), `PreambleNeeds` (needs only). `encode()` uses
   `NoReport`. Table lookups resolve the profile panic-free (`.get(idx)`), so
   the compiler can remove the needs logic entirely under `NoReport` with a
-  static chain.
+  static chain. `report_needs` may be called any number of times for the
+  same profile (the encoder only skips immediate repeats), so implementations
+  must be idempotent; the trait docs say so.
 
 ### Input normalization
 
@@ -265,6 +286,10 @@ math versus text mode, or of streaming output; this library adds all three.
 - Builtin tables: `DEFAULTS` (all entries), `NON_ASCII`, `ASCII_SPECIALS`
   (the 13 entries `" # $ % & < > \ ^ _ { } ~`), from one source list. The
   latter two are filtered views that share the compiled data of `DEFAULTS`.
+- The builtin tables have the opaque public type `BuiltinTable` (a newtype
+  with a private field around one of the layout structs), so the table layout
+  stays an implementation detail and can change without breaking the API.
+  The three layout structs themselves are public for users' own tables.
 - No cargo features for binary size: unused statics are dropped at link
   time. More builtin tables are anticipated (see "Open items").
 - There is no per-char lookup on the encoder (normalization and protection
@@ -292,6 +317,10 @@ a runtime `Chunk::docs` string (source comments instead).
   check.
 - `core::error::Error` is used throughout (stable since Rust 1.81).
 - `criterion` is added as a dev-dependency at step 6.
+- `missing_docs = "deny"` also fires on public named struct fields and enum
+  variants (not on tuple-struct fields): `Chunk`, `ModeWrapper`,
+  `StandardProtection`, `TableEntry`, `EncodeReport` need per-field docs.
+- The `Cargo.toml` changes (`name`, `[features]`) are part of step 1.
 
 ### Module layout
 
@@ -322,7 +351,7 @@ src/
   statictable.rs             static layouts, const-fn builders,
                              compile_static_table!
   builtin/
-    mod.rs                   DEFAULTS, NON_ASCII, ASCII_SPECIALS
+    mod.rs                   BuiltinTable, DEFAULTS, NON_ASCII, ASCII_SPECIALS
     needs_profiles.rs        builtin chunks and profiles
     default_table.rs         the entries: hand-maintained source of truth,
                              with provenance notes and both MIT notices
@@ -338,7 +367,11 @@ pub type BoxError = Box<dyn core::error::Error + Send + Sync + 'static>;
 pub type RuleResult<'a> = Result<Option<EncodedReplacement<'a>>, BoxError>;
 
 pub trait Rule: Debug {
-    fn apply<'a>(&'a self, input: RuleInput<'_>) -> RuleResult<'a>;
+    // One lifetime for `self` and the input: the result may borrow from
+    // either. (With `RuleInput<'_>` a rule could not return a slice of the
+    // input; verified by compiling on Rust 1.86. This form stays
+    // dyn-compatible.)
+    fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a>;
     fn ascii_triggers(&self) -> AsciiSet { AsciiSet::ALL }
 }
 
@@ -375,11 +408,12 @@ impl<'a> EncodedReplacement<'a> {
     pub fn needs(&self) -> Option<&'a Profile>;
 }
 
-// A closure cannot lend out its captures, so closure rules return 'static
-// data (owned strings, literals, `&'static Profile`). Rules that lend from
-// their own state implement `Rule` on a struct.
+// A closure rule may return owned strings, literals, `&'static Profile`, or
+// slices of the input. It cannot lend out its own captures; rules that lend
+// from their own state implement `Rule` on a struct. If closure inference
+// rejects the higher-ranked bound, fall back to `-> RuleResult<'static>`.
 pub fn rule_fn<F>(f: F) -> RuleFn<F>
-    where F: Fn(RuleInput<'_>) -> RuleResult<'static>;
+    where F: for<'s> Fn(RuleInput<'s>) -> RuleResult<'s>;
 impl<F> RuleFn<F> { pub fn with_ascii_triggers(self, set: AsciiSet) -> Self; }
 // RuleFn has a manual Debug impl that prints `RuleFn(..)`.
 
@@ -388,6 +422,8 @@ pub struct RuleChain<L> { /* rules: L; room for chain-level options */ }
 impl<L: RuleList> RuleChain<L> { pub const fn new(rules: L) -> Self; }
 impl<L: RuleList + Debug> Rule for RuleChain<L> { /* first match wins;
     ascii_triggers = union over the members */ }
+// RuleList (sealed): tuples of arity 0 to 12 (the empty tuple never
+// matches), [R; N], Vec<R>.
 pub type DynRuleChain<'r>      = RuleChain<Vec<Box<dyn Rule + Send + Sync + 'r>>>;
 pub type LocalDynRuleChain<'r> = RuleChain<Vec<Box<dyn Rule + 'r>>>;
 // On both aliases: empty(), push(rule) (boxes for you), with_rule(rule) -> Self.
@@ -429,6 +465,12 @@ pub struct StandardProtection {
 impl StandardProtection {
     pub const fn text_mode() -> Self;        // BracesAround
     pub const fn math_mode() -> Self;        // SpaceAfterMacroName
+    /// The wrapper this strategy applies to a value with this hint: `None`
+    /// for `DoNotProtect` and for a value valid in the output mode. Public so
+    /// that custom strategies (such as `BracesAroundAll`) can reuse the mode
+    /// handling.
+    pub fn mode_wrapper_for(&self, hint: ReplacementProtectionHint)
+        -> Option<&ModeWrapper>;
 }                                            // Default = text_mode()
 pub struct BracesAroundAll(pub StandardProtection);
 
@@ -464,8 +506,10 @@ impl AsciiSet {
     pub const fn of(chars: &str) -> Self;                  // panics on non-ASCII
     pub const fn range(r: RangeInclusive<u8>) -> Self;
     pub fn from_fn(f: impl Fn(u8) -> bool) -> Self;        // evaluated once
-    pub const fn union(self, other: Self) -> Self;         // also `|`
-    pub const fn contains(self, byte: u8) -> bool;
+    pub const fn union(self, other: Self) -> Self;         // `|` also works,
+                                                           // but not in const
+    pub const fn contains(self, byte: u8) -> bool;         // false for >= 128
+                                                           // (guard the shift)
 }
 
 // unknown_char.rs
@@ -507,7 +551,12 @@ pub fn encode(text: &str) -> String;
 ```
 
 `Encoder::new` is not `const` (it calls `ascii_triggers`); construction is
-cheap, and an encoder is meant to be built once and reused.
+cheap, and an encoder is meant to be built once and reused. The free
+`encode()` builds its encoder on every call; for a static chain that is a
+few instructions (there is no `no_std` cell to cache it in).
+
+`ReplacementProtectionHint` is `#[non_exhaustive]`, so a strategy written
+outside the crate (including the golden test's) needs a wildcard match arm.
 
 ### Behavior specifications
 
@@ -543,8 +592,10 @@ the empty string). Use ASCII letters only, not Unicode `is_alphabetic`.
   needs until it is decided.
 
 **`BracesAroundAll`**: `DoNotProtect` is written as is. Any other value gets
-the mode wrapping of the inner `StandardProtection` (its `protect_names` is
-ignored) and is then wrapped in `{` `}`, the empty string included (`{}`).
+the mode wrapping of the inner `StandardProtection` (through
+`mode_wrapper_for`; its `protect_names` is ignored) and is then wrapped in
+`{` `}`, the empty string included (`{}`). It uses only public API, so it
+serves as the example of a custom strategy.
 
 **Unknown chars**: for each one, call `report.report_unknown_char(ch, pos)`
 first, whatever the policy. Then `Keep` copies the char, `Ignore` writes
@@ -557,7 +608,13 @@ in uppercase hex, at least four digits.
 
 **Needs**: `PreambleNeeds::chunks()` yields all package chunks first, then
 all snippet chunks, each group in first-seen order (a snippet may call into
-a package of its own profile).
+a package of its own profile). `write_preamble` writes one line per package
+chunk (`\usepackage{name}` or `\usepackage[options]{name}`) and then the
+snippets; it does **not** merge options. That is safe for the builtin chunks:
+the only package loaded under several chunks is `fontenc`, which is written
+to be loaded repeatedly without an option clash, and every builtin `fontenc`
+chunk lists `T1` last, so the document's default encoding stays `T1`. Merging
+is left to consumers that have their own package machinery.
 
 ### Encoder loop
 
@@ -577,6 +634,8 @@ a package of its own profile).
 ### Needs data model
 
 ```rust
+// Chunk and ChunkPreamble derive Debug, Clone, PartialEq, Eq, Hash
+// (`Cow<'static, [Chunk]>` requires `Chunk: Clone`).
 pub struct Chunk { pub id: Cow<'static, str>, pub preamble: ChunkPreamble }
 pub enum ChunkPreamble {
     Package(Cow<'static, str>),                                // name
@@ -608,7 +667,9 @@ pub struct PreambleNeeds { /* distinct chunks, keyed by id */ }
   `Chunk::package_with_options("fontenc-t2a", "fontenc", "T2A,T1")`; snippets
   keep their ids. Structured options let a consumer merge several `fontenc`
   requests into one `\usepackage` line.
-- Profile index 0 is reserved for "no needs" and resolves to `None`.
+- Profile index 0 is reserved for "no needs". `PROFILES[0]` is a real, empty
+  `Profile`, so that indices equal array positions; a table lookup maps
+  index 0 to `None` without consulting the array.
 - `Cow` has drop glue, so `&[..]` literals of chunks are not promoted to
   statics on their own. Define the profiles through a small macro that also
   creates the backing statics for the chunk lists.
@@ -634,17 +695,27 @@ pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
 - The crate's own table types implement `Rule` directly (one lookup on
   `input.ch()`, `replace_char`, `ascii_triggers` = `ascii_keys`).
   `TableRule` is for user-defined `LookupTable` impls; a blanket impl would
-  clash with the `&R` / `Box<R>` forwarding impls.
-- `NON_ASCII` and `ASCII_SPECIALS` are `ExceptAscii` / `OnlyAscii` views
-  holding a reference to the `DEFAULTS` static, so all three share one copy
-  of the data. `ExceptAscii` reports `AsciiSet::EMPTY` as its triggers.
+  clash with the `&R` / `Box<R>` forwarding impls. `LookupTable` is also
+  implemented for `&T`.
+- The crate's table types offer `iter()` over `(char, TableEntry)` in key
+  order (used by the tests, and useful for tooling).
+- `pub static DEFAULTS: BuiltinTable`;
+  `pub static NON_ASCII: ExceptAscii<&'static BuiltinTable>`;
+  `pub static ASCII_SPECIALS: OnlyAscii<&'static BuiltinTable>`. The views
+  hold a reference to the `DEFAULTS` static, so all three share one copy of
+  the data. `ExceptAscii` reports `AsciiSet::EMPTY` as its triggers.
 - Keep the approach of `src/statictable.rs`: `const fn` builders turn a
-  sorted entry slice into one of three layouts (binary search over a
-  separate key array; two-level with a linear scan inside a 256-code-point
-  block; two-level with a direct 256-slot index per block), and a
-  `macro_rules!` macro declares the backing statics. The layout is an
-  argument of the macro; use the two-level direct index for the builtin
-  table until the benchmark decides.
+  sorted entry slice into one of three layouts, each its own public struct
+  (`StaticTableBinarySearch`: binary search over a separate key array;
+  `StaticTableTwoLevelLinear`: a block per distinct `code point >> 8`, with a
+  linear scan inside the block; `StaticTableTwoLevelDirect`: the same blocks
+  with a direct 256-slot index each), and a `macro_rules!` macro declares the
+  backing statics. The macro is rewritten to take three arguments: the
+  entries, the profile array (stored in the table as
+  `&'static [Profile]`, so that `lookup` can turn an entry's index into a
+  `&'static Profile`), and the layout, with the prototype's arm names
+  `binary_search`, `two_level_linear`, `two_level_direct_index`. Use
+  `two_level_direct_index` for the builtin table until the benchmark decides.
 - Macro input stays a plain `const` slice passed as an expression (a
   1549-entry token list would strain `macro_rules!`):
 
@@ -653,12 +724,16 @@ pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
       ('\u{00E9}', r"\'e",    TEXT, BUILTINS), // LATIN SMALL LETTER E WITH ACUTE
       ('\u{03B1}', r"\alpha", MATH, BUILTINS), // GREEK SMALL LETTER ALPHA
   ];
-  pub static DEFAULTS: .. = compile_static_table!(ENTRIES, PROFILES, two_level_direct);
+  pub static DEFAULTS: BuiltinTable =
+      BuiltinTable(compile_static_table!(ENTRIES, PROFILES, two_level_direct_index));
   ```
+  The builtin `ENTRIES` const is `#[doc(hidden)] pub`, so that the benchmarks
+  can compile the same data in all three layouts.
 - Compile-time checks (a violation is a compile error): strictly ascending
   keys, profile index in range, ASCII-only encoded strings, balanced braces
   (not counting `\{` and `\}`), no trailing lone backslash, entry count fits
-  the index type.
+  the index type. Const evaluation cannot format messages, so a violation
+  reports which check failed but not which entry; do not spend time on that.
 - Compiled per entry: the `&'static str` plus two bytes (termination bit,
   mode bits, profile index). The termination and the table's `ascii_keys`
   are computed by `const fn` at compile time.
@@ -679,40 +754,91 @@ hand-maintained source of truth.
   U+2061). Everything else is `TEXT` (580 entries). Three mixed entries keep
   their inner `\ensuremath` and are `TEXT`: U+038F `\'{}\ensuremath{\Omega}`,
   U+2109 `\ensuremath{^\circ}F`, U+25AA `{\small\ensuremath{\blacksquare}}`.
-- Rename every `\flm` command prefix to `\UnxT` (68 entries use one; the
-  snippets define them). Inside the snippets, also rename the internal font
-  identifiers that start with `flm` (for example `flmstixcal`, `flmwasy`).
+- Rename every `\flm` command prefix to `\UnxT`, leaving the rest of the name
+  unchanged: `\flmBbold` becomes `\UnxTBbold`, `\flmsqint` becomes
+  `\UnxTsqint` (68 entries use such a command; the snippets define them).
+  Inside the snippets, rename the internal font identifiers that start with
+  `flm` the same way (`flmstixcal` becomes `UnxTstixcal`, `flmwasy` becomes
+  `UnxTwasy`, and so on).
 - The script asserts, for every entry, that the text-mode rendering of the
   new entry (`\ensuremath{` + X + `}` for `MATH`, the string itself
   otherwise) equals the old string after the prefix rename.
-- Apply the same prefix rename to the copied golden file and review that
-  diff; it is the only expected change to the golden.
+- Copy `initial-rust-port/tests/goldens/latexencode/` (the golden file and
+  its `README.md`) to `tests/goldens/latexencode/`, and update the README's
+  wording for this crate. Apply the same prefix rename to the copied golden
+  file (68 lines change) and review that diff. It is the only permitted
+  change to the golden: **never regenerate the golden to make a test pass**;
+  every changed line must be a change to the table that was meant.
 - Carry over by hand into the module docs of `default_table.rs`: the
   provenance notes, the list of corrections over pylatexenc, and both MIT
   license notices. Replace references to FLM.
 
 ### Tests
 
-- Port `initial-rust-port/tests/latexencode.rs` to the new API; copy the
-  golden file to `tests/goldens/`. Adaptations:
-  - `braces-all` / `braces-almost-all` are no longer modes. One test covers
-    `BracesAroundAll`.
-  - The per-rule protection override test becomes a `DoNotProtect` test.
-  - The DEL quirk test is replaced by tests of the new unknown-char
-    definition (including: a rule can match a control char).
-  - `unihex` is tested through `UnknownCharPolicy::callback(unknown_unihex)`.
-  - Zero consumption: `replace_prefix(0, ..)` panics and
-    `try_replace_prefix(0, ..)` returns an error.
-- Golden test: keep the golden under its original protection mode by
-  defining, in the test file, a custom `ReplacementProtection` that
-  reproduces `braces-almost-all` (compute the text-mode rendering as above;
-  wrap it in braces if it starts with a backslash), with
-  `UnknownCharPolicy::Fail`. Output must be byte-identical to the golden.
-  This validates the data migration, the mode wrapping, and the encoder loop
-  in one go, without reviewing 1600 changed lines by eye.
-- The structural table tests become the compile-time checks above. The test
-  that every snippet's profile also loads the `fontenc` encoding the snippet
-  refers to stays a runtime test.
+- Port `initial-rust-port/tests/latexencode.rs` (39 tests) and the 9 unit
+  tests at the end of `initial-rust-port/src/lib.rs` to the new API. Every
+  old test has a disposition here; tests not named are ported as they are,
+  with expected strings updated only for the `\UnxT` rename.
+  - `basic_1_non_ascii_only_braces_all`,
+    `basic_2c_ascii_specials_untouched_with_non_ascii_only`: use the
+    `NON_ASCII` table instead of a `non_ascii_only` flag; `braces-all`
+    becomes `BracesAroundAll`.
+  - `basic_2_*`: `BracesAfter`. `basic_2b_protection_none`: `NoProtection`.
+  - `basic_custom_protection_applies_to_every_spelling`: a custom
+    `ReplacementProtection` impl.
+  - `basic_3_unknown_kept_and_reported`: `EncodeReport` holds the char; the
+    position (21) is checked through a small custom `EncodeReporter`.
+  - `basic_3c_unknown_unihex`, `ignore_and_custom_policies`: through
+    `UnknownCharPolicy::callback(..)`.
+  - `rules_00_order_of_rules`, `issue_no21_acronyms_through_a_callable`,
+    `rules_02_superscript_two`: `RuleChain`, `DynTable`, `rule_fn`.
+  - `rules_callable_must_consume_at_least_one_char` and the unit test
+    `a_callable_consuming_past_the_end_or_inside_a_character_is_refused`:
+    replaced by tests that `replace_prefix` panics and `try_replace_prefix`
+    returns an error for zero, past-the-end, and mid-character lengths.
+  - `delete_character_at_the_ascii_boundary`: replaced by tests of the new
+    unknown-char definition (DEL and control chars are unknown; a rule can
+    match a control char).
+  - `per_rule_protection_overrides_the_encoder_s`: becomes a `DoNotProtect`
+    test.
+  - `no_rules_means_everything_non_ascii_is_unknown`: `RuleChain::new(())`.
+  - `the_conformance_golden_is_this_table_s_output`: see the golden test
+    below. `the_conformance_golden_shows_the_departures`: ported as is.
+  - `the_table_is_sorted_and_its_spellings_are_well_formed`,
+    `every_entry_names_a_profile_that_exists`: become the compile-time
+    checks; keep only the "`lookup` agrees with `iter()`" part as a test.
+  - `every_named_table_entry_is_covered_by_the_fixture`,
+    `astral_plane_entries_by_code_point`: ported, using `iter()`.
+  - `modes_over_the_whole_table`: ported against the mode column (935
+    `MathOnly`, 34 `AnyMode`, 580 `TextOnly`, the three mixed entries
+    `TextOnly`); the parts that test `Mode::of` parsing are dropped.
+  - `the_chunk_table_is_well_formed`: distinct ids only (no `docs` field, no
+    64-chunk limit any more).
+  - `a_snippet_chunk_never_appears_without_the_package_chunks_it_calls_into`:
+    ported as a runtime test, reading the structured `PackageWithOptions`
+    options instead of parsing a `\usepackage` line.
+  - `every_profile_names_chunks_that_exist_and_no_set_appears_twice`: keep
+    "no two builtin profiles hold the same chunk set".
+  - `a_set_of_needs_unions_profiles_and_keeps_the_table_s_order`: adapted to
+    the new order (packages first, then snippets, each in first-seen order);
+    the expected lists change.
+  - Dropped with their features: `the_commands_a_spelling_writes_are_readable`
+    (`macro_names`), and the unit tests `mode_is_read_off_the_spelling_s_form`
+    (`Mode::of`), `spelling_of_falls_back_to_the_composed_form`,
+    `apply_is_what_the_encoder_applies_to_every_spelling`.
+  - Unit tests `braces_protection_*` and `braces_all_*`: ported to
+    `StandardProtection` / `BracesAroundAll`.
+    `composed_borrows_composed_text_and_composes_the_rest`: ported to `nfc()`.
+    `errors_display_their_position`, `debug_forms_name_the_kinds`: ported.
+- Golden test: keep the golden under its original settings. Define, in the
+  test file, a custom `ReplacementProtection` that reproduces
+  `braces-almost-all`: `DoNotProtect` as is; otherwise compute the text-mode
+  rendering (`mode_wrapper_for` on `StandardProtection::text_mode()`) and
+  wrap it in braces if it is non-empty and starts with a backslash. Encode
+  with `DEFAULTS`, `NormalizeNfc`, and `UnknownCharPolicy::Fail`, rebuilding
+  each input line with `"0x%04X %-50s    |%s|\n"` exactly as the old test
+  does. Output must be byte-identical to the golden. This validates the data
+  migration, the mode wrapping, NFC, and the encoder loop in one go.
 - New tests: `ascii_triggers` equivalence (same output as with `ALL` for
   every rule); math output mode; `SpaceAfterMacroName`; output equality
   between `NoReport` and `EncodeReport`; `Send + Sync` assertions for a
@@ -729,18 +855,23 @@ hand-maintained source of truth.
 
 ### Implementation order
 
-1. Core skeleton that compiles: `rule`, `chain`, hint types, `asciiset`,
-   `outbuffer`, `report`, `preamble`, `profile`, `StandardProtection`,
-   `BracesAroundAll`, the encoder loop with `NoNormalization` only. Unit
-   tests against a tiny `DynTable`. This step validates every signature in
-   this plan; update the plan where Rust disagrees.
-2. `LookupTable`, the static layouts, `compile_static_table!` with its
-   compile-time checks, the `OnlyAscii` / `ExceptAscii` views.
-3. Data migration (script, builtin chunks and profiles, `DEFAULTS`,
-   `NON_ASCII`, `ASCII_SPECIALS`, module docs with provenance and licenses).
-4. Port the test suite and the golden file.
-5. `InputNormalizer` with `NormalizeNfc` as the default, `UnknownCharPolicy`
-   callback, `unknown_unihex`, the free `encode()`, crate-level docs.
+1. Core that compiles, with everything the encoder loop touches:
+   `Cargo.toml` fixes, `rule`, `chain`, hint types, `asciiset`, `outbuffer`,
+   `report`, `preamble`, `profile`, `StandardProtection`, `BracesAroundAll`,
+   `normalizer` (both normalizers), the whole `UnknownCharPolicy` with
+   `unknown_unihex`, `LookupTable` / `TableEntry` / `TableRule` / `DynTable`,
+   and the encoder. Unit tests against a tiny `DynTable`. This step settles
+   the core signatures; update the plan where Rust disagrees.
+2. The static layouts, `compile_static_table!` with its compile-time checks,
+   `iter()`, the `OnlyAscii` / `ExceptAscii` views. Tests on a small table in
+   each layout.
+3. Data migration (script, builtin chunks and profiles, `BuiltinTable`,
+   `DEFAULTS`, `NON_ASCII`, `ASCII_SPECIALS`, module docs with provenance and
+   licenses, the golden directory).
+4. Port the test suite and the golden test.
+5. The free `encode()`, crate-level docs, `README.md`, and the crate's own
+   license files `LICENSE-MIT` and `LICENSE-APACHE` (`Cargo.toml` declares
+   `MIT OR Apache-2.0`).
 6. Benchmarks, table layout decision, `cargo asm` / `cargo bloat` checks.
 7. Later, outside this plan: `unicode-xml` table generator; language
    bindings.
@@ -753,7 +884,10 @@ hand-maintained source of truth.
   `\textnormal` is believed to behave like `\mbox` alone and like `\text`
   once amsmath is loaded (to be verified).
 - Static table layout and payload packing (for example one string blob with
-  offsets instead of one `&str` per entry): decide by benchmark.
+  offsets instead of one `&str` per entry): decide by benchmark. The builtin
+  data spans 22 distinct 256-code-point blocks, and both two-level layouts
+  find the block by a linear scan, so they may lose to the binary search
+  (about 11 probes); a direct first-level index is a further option.
 - `unicode-xml` table: pylatexenc's generated dict
   (`latexencode/_uni2latexmap_xml.py`, 2233 entries) has no mode column, no
   needs, and no license header, and it mixes bare math macros with text
