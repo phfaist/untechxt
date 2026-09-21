@@ -16,9 +16,8 @@ This library also reports any preamble definitions/usepackage commands you
 should include to accompany the generated latex-encoded content.  The encoded
 content is the same under pdfLaTeX, LuaLaTeX and XeLaTeX, and the preamble can
 be written either for one of these engines or in a form that compiles under all
-of them.  This library
-is also highly extensible so you can define your own encoding rules and behavior
-hooks, e.g., for unknown characters.
+of them.  This library is also highly extensible so you can define your own
+encoding rules and behavior hooks, e.g., for unknown characters.
 
 **Experimental status:** This library is still under experimental development
 status.  Its API may still change!
@@ -31,7 +30,7 @@ settings and a built-in symbol encoding table.
 
 ```rust
 use untechxt::encode;
-//!
+
 assert_eq!(encode("Café — naïve"), r#"Caf\'e {\textemdash} na\"ive"#);
 assert_eq!(encode("100% & more"), r"100\% \& more");
 ```
@@ -62,8 +61,9 @@ characters are encountered, along with more options.
 
 The `untechxt` command encodes files, or its standard input, from the terminal.
 The command lives in a crate of its own, `untechxt-cli`, so that the library
-keeps its single dependency.  Install the command from a checkout of this
-repository with `cargo install --path rust/untechxt-cli`.
+keeps its single dependency.  Install the command with `cargo install
+untechxt-cli`, or from a checkout of this repository with `cargo install --path
+rust/untechxt-cli`.
 
 ```sh
 $ echo 'Café — 100%' | untechxt
@@ -119,7 +119,8 @@ description.
 
 ## Documentation
 
-Use `cargo doc` to generate the API documentation with all the fun details!
+Read the API documentation with all the fun details on
+[docs.rs](https://docs.rs/untechxt), or generate it locally with `cargo doc`.
 
 
 ## Crate Dependencies and Features
@@ -139,7 +140,7 @@ without creating temporary owned strings.  Disable the `std` feature for a
 Different steps of the pipeline can be customized and extended.
 
 - A *rule* specifies how an input character, or an input substring, is
-  mapped to a LaTeX encoded value.  A special rule type, [`RuleChain`],
+  mapped to a LaTeX encoded value.  A special rule type, `RuleChain`,
   tries several rules in order until the first match; it should be used
   whenever the encoder should apply multiple rules.
   
