@@ -710,7 +710,10 @@ pub struct PreambleNeeds { /* two Vec<Chunk>, packages and snippets */ }
   requests into one `\usepackage` line.
 - Profile index 0 is reserved for "no needs". `PROFILES[0]` is a real, empty
   `Profile`, so that indices equal array positions; a table lookup maps
-  index 0 to `None` without consulting the array.
+  index 0 to `None` without consulting the array. The builtin profiles are
+  `pub static PROFILES: [Profile; 21]` of `builtin/needs_profiles.rs`, with
+  one `pub const NAME: ProfileIndex` per profile beside it; `BUILTINS` is
+  index 0.
 - `Cow` has drop glue, so `&[..]` literals of chunks are not promoted to
   statics on their own (confirmed: `static P: Profile =
   Profile::from_static(&[Chunk::package("x")]);` is rejected, and
@@ -767,11 +770,15 @@ pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
   linear scan inside the block; `StaticTableTwoLevelDirect`: the same blocks
   with a direct 256-slot index each), and a `macro_rules!` macro declares the
   backing statics. The macro is rewritten to take three arguments: the
-  entries, the profile array (stored in the table as
-  `&'static [Profile]`, so that `lookup` can turn an entry's index into a
+  entries, the profiles as a `&'static [Profile]` expression (stored in the
+  table, so that `lookup` can turn an entry's index into a
   `&'static Profile`), and the layout, with the prototype's arm names
   `binary_search`, `two_level_linear`, `two_level_direct_index`. Use
   `two_level_direct_index` for the builtin table until the benchmark decides.
+  Each layout also carries the table's `ascii_keys` as a compiled `AsciiSet`,
+  and offers `iter()`, `len()` and `is_empty()`. The compiled payload is the
+  public but `#[doc(hidden)]` `StaticEntry`, which the macro has to name in
+  the `static` items it declares.
 - Macro input stays a plain `const` slice passed as an expression (a
   1549-entry token list would strain `macro_rules!`):
 
@@ -781,8 +788,13 @@ pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
       ('\u{03B1}', r"\alpha", MATH, BUILTINS), // GREEK SMALL LETTER ALPHA
   ];
   pub static DEFAULTS: BuiltinTable =
-      BuiltinTable(compile_static_table!(ENTRIES, PROFILES, two_level_direct_index));
+      BuiltinTable(compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index));
   ```
+  The profile argument is a `&'static [Profile]`: a `const` of that type, or
+  `&PROFILES` for a `static PROFILES: [Profile; N]`. A `const` cannot hold a
+  reference to a `static`, so the macro reads only its length in a `const`
+  item (the check that every index is in range) and passes the expression
+  itself to the `static` items it declares.
   The builtin `ENTRIES` const is `#[doc(hidden)] pub`, so that the benchmarks
   can compile the same data in all three layouts.
 - Compile-time checks (a violation is a compile error): strictly ascending

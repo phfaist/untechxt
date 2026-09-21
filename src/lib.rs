@@ -74,6 +74,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod asciiset;
+pub mod builtin;
 pub mod chain;
 pub mod encoder;
 pub mod lookuptable;
@@ -88,6 +89,7 @@ pub mod statictable;
 pub mod unknown_char;
 
 pub use crate::asciiset::AsciiSet;
+pub use crate::builtin::{BuiltinTable, ASCII_SPECIALS, DEFAULTS, NON_ASCII};
 pub use crate::chain::{DynRuleChain, LocalDynRuleChain, RuleChain, RuleList};
 pub use crate::encoder::{EncodeError, Encoder};
 pub use crate::lookuptable::{DynTable, ExceptAscii, LookupTable, OnlyAscii, TableEntry, TableRule};
