@@ -32,7 +32,7 @@ use std::sync::Arc;
 use untechxt::builtin::default_table::ENTRIES;
 use untechxt::builtin::needs_profiles::PROFILES;
 use untechxt::{
-    nfc, rule_fn, unknown_unihex, AsciiSet, BoxError, BracesAroundAll, Chunk, ChunkPreamble,
+    encode, nfc, rule_fn, unknown_unihex, AsciiSet, BoxError, BracesAroundAll, Chunk, ChunkPreamble,
     DynTable, EncodeError, EncodeReport, EncodeReporter, Encoder, LookupTable,
     MacroNameProtection, NoReport, OutBuffer, PreambleNeeds, Profile, ProfileIndex, ProtectInput,
     ReplacementProtection, ReplacementProtectionHint as Hint, Rule, RuleChain, RuleInput,
@@ -74,11 +74,13 @@ fn protect<P: ReplacementProtection>(protection: &P, encoded: &str, hint: Hint) 
 // The ported tests
 // ---------------------------------------------------------------------------
 
-/// pylatexenc `test_basic_0` / `test_basic_0b`: the default encoder.
+/// pylatexenc `test_basic_0` / `test_basic_0b`: the default encoder, and the
+/// free [`encode`], which is that encoder under every default setting.
 #[test]
 fn basic_0_default_encoder() {
     let expected = "''\\`A votre sant\\'e!'' s'exclama le ma\\^itre de maison \\`a 100\\%.";
     assert_eq!(defaults().encode(SANTE).unwrap(), expected);
+    assert_eq!(encode(SANTE), expected);
 }
 
 /// pylatexenc `test_basic_1`: `non_ascii_only` with `braces-all`. The flag is
@@ -655,8 +657,25 @@ fn golden_input_line(cp: u32, name: &str) -> String {
 }
 
 /// The input lines of the whole golden, in order.
+///
+/// The golden holds a line for every entry of the builtin table but the 21
+/// unnamed code points, and printable ASCII besides, so it has at least as many
+/// lines as the table has entries. Checking that here is what keeps a golden
+/// that went missing, was emptied or was truncated from letting a test over the
+/// whole corpus pass with nothing encoded.
 fn golden_input_lines(golden: &str) -> Vec<String> {
-    golden.lines().map(parse_golden_line).map(|(cp, name)| golden_input_line(cp, name)).collect()
+    let lines: Vec<String> = golden
+        .lines()
+        .map(parse_golden_line)
+        .map(|(cp, name)| golden_input_line(cp, name))
+        .collect();
+    assert!(
+        lines.len() >= DEFAULTS.len(),
+        "the golden holds {} lines for the builtin table's {} entries",
+        lines.len(),
+        DEFAULTS.len()
+    );
+    lines
 }
 
 /// Every line of the golden, rebuilt as its input line and encoded, is the

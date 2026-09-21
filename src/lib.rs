@@ -270,8 +270,8 @@
 //! The input goes through an [`InputNormalizer`] before any rule sees it. The
 //! default is [`NormalizeNfc`], Unicode's canonical composed form, so that a
 //! letter followed by a combining accent becomes the single accented
-//! character the tables know; a quick check comes first, and text that is
-//! composed already — nearly all text — is not copied.
+//! character the tables know; a quick check comes first, and text that it
+//! finds composed already — nearly all text — is not copied.
 //!
 //! Positions, in an [`EncodeError`] as in
 //! [`EncodeReporter::report_unknown_char`], are byte offsets into the
