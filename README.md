@@ -1,22 +1,41 @@
 # untechxt
 
-Encode Unicode text as LaTeX source, and learn what the document's preamble
-needs for it to print.
+Unicode-to-LaTeX encoder.  This library turns text such as `Café — α ≤ β` into
+the LaTeX source `Caf\'e {\textemdash} \ensuremath{\alpha} \ensuremath{\leq}
+\ensuremath{\beta}`.  It is a Rust (`no_std`+alloc) rewrite/redesign of
+[pylatexenc](https://github.com/phfaist/pylatexenc)'s `latexencode` module.
 
-A LaTeX document cannot always take a character as it stands: an old
-installation reads no UTF-8, a font has no glyph for the character, or the
-character is one of LaTeX's own special characters (`%`, `&`, `#`). `untechxt`
-replaces each such character by the LaTeX that prints it — `é` by `\'e`, `α` by
-`\ensuremath{\alpha}`, `—` by `{\textemdash}` — leaves ordinary characters
-alone, and reports which packages and declarations the result needs. It is a
-Rust library, `no_std`, and a redesign of the `latexencode` module of
-[pylatexenc](https://github.com/phfaist/pylatexenc), by the same author.
+LaTeX source typically only tolerates a restricted set of characters in its
+input, and some of those characters have a special meaning (notably the
+escape character `\\`). This library provides an *encoding* of an entire
+input string, meaning that it replaces each character that LaTeX either
+rejects or would take special action on, by some LaTeX code that displays
+that character.
+
+This library also reports any preamble definitions/usepackage commands you
+should include to accompany the generated latex-encoded content.  This library
+is also highly extensible so you can define your own encoding rules and behavior
+hooks, e.g., for unknown characters.
+
+
+## Quick start
+
+Use the `encode()` function, which runs the encoder with some reasonable default
+settings and a built-in symbol encoding table.
 
 ```rust
-use untechxt::{default_rules, encode, Encoder};
-
-// One call, every default setting.
+use untechxt::encode;
+//!
 assert_eq!(encode("Café — naïve"), r#"Caf\'e {\textemdash} na\"ive"#);
+assert_eq!(encode("100% & more"), r"100\% \& more");
+```
+
+The encoding is handled by an `Encoder` object.  Its `encode_with_report()`
+method reports any required preamble definitions for your LaTeX document, along
+with the encoded latex content:
+
+```rust
+use untechxt::{default_rules, Encoder};
 
 // An encoder, and what its output needs in the preamble.
 let encoder = Encoder::new(default_rules());
@@ -28,70 +47,65 @@ report.needs.write_preamble(&mut preamble).unwrap();
 assert_eq!(preamble, "\\usepackage{dsfont}\n\\usepackage{nicefrac}\n");
 ```
 
-## What it offers
+The `Encoder` can be customized with your own encoding rules (for instance, with
+lookup tables or custom callback functions), your preferred policy when unknown
+characters are encountered, along with more options.
 
-- **A builtin table of 1549 characters**, each with the LaTeX that prints it,
-  the LaTeX mode that LaTeX is valid in, and the preamble it needs. Every entry
-  compiles and sets the glyph its character stands for.
-- **Preamble needs.** An encoded value carries the set of *chunks* — packages
-  with their options, or declarations no package makes — that a document must
-  hold. They accumulate over a whole document and are written out as a
-  preamble.
-- **Text mode and math mode.** The mode a value is valid in is part of the
-  table, not of the string: `\alpha` is wrapped in `\ensuremath{…}` for text
-  output and written bare for math output, where a text value is the one that
-  gets wrapped.
-- **Speed.** Runs of plain ASCII are copied in bulk without decoding a
-  character or calling a rule; the builtin table is compiled into a static
-  layout with nothing to do at load time; a statically typed rule chain lets
-  the compiler inline and unroll the whole loop.
-- **Streaming output.** Encoding appends to a sink of the caller's, so a long
-  document never has to exist as one string.
 
-## `no_std`
+## Documentation
 
-The crate is `#![no_std]` and uses `alloc`: it allocates strings and vectors
-and nothing else. Its one dependency is `unicode-normalization`. The default
-feature `std` adds a single item, the `IoOut` adapter for `std::io::Write`;
-`cargo build --no-default-features` is the `no_std` build.
+Use `cargo doc` to generate the API documentation with all the fun details!
 
-## Extending it
 
-Nothing in the pipeline is fixed:
+## Crate Dependencies and Features
 
-- **Rules.** A rule is offered a position in the input and answers with the
-  LaTeX that replaces what it consumed there, or with "not mine". Rules are
-  tried in order and the first match wins, so a rule before the default rules
-  overrides them and a rule after them fills in what they lack. A rule is a
-  lookup table (builtin, built at run time, or compiled from your own data at
-  compile time), a closure, or any type that implements the trait — including
-  one that calls into another language.
-- **Protection.** What is written around a value so that it cannot merge with
-  the text that follows, and so that it is valid in the output's mode. The
-  standard strategy is configurable at run time; a strategy of your own is a
-  trait implementation.
-- **Unknown characters.** Keep, ignore, replace, spell the code point out,
-  fail, or call your own function.
-- **Output, reports, normalization.** The sink the LaTeX is written to, what
-  is done with the preamble needs and the unknown characters, and what the
-  input is normalized to before any rule sees it, are each a trait with the
-  obvious implementations provided.
+The crate is compatible with `no_std` + `alloc` (uses strings and vectors).  Its
+single dependency is `unicode-normalization`.
 
-The crate documentation describes all of it; `cargo doc --open`, or
-[docs.rs](https://docs.rs/untechxt).
+The feature `std` (on by default) adds support for streaming in `std::io::Write`
+without creating temporary owned strings.  Disable the `std` feature for a
+`no_std` build; this is achieved with the command `cargo build
+--no-default-features`.
 
-## Where the data comes from
 
-The builtin table began as a copy of pylatexenc's `defaults` conversion table
-([pylatexenc](https://github.com/phfaist/pylatexenc), MIT), whose character map
-was in turn adapted from
-[latexcodec](https://pypi.python.org/pypi/latexcodec) (MIT). It has been
-maintained by hand here since: a spelling that does not compile, or that sets
-the wrong glyph, is corrected, and every departure from pylatexenc's spelling
-is listed with its reason in the module documentation of
-`src/builtin/default_table.rs` — which is also where both MIT notices are
-reproduced in full, as they must travel with the data. What each entry needs in
-the preamble is this library's own; pylatexenc records nothing about packages.
+## Extending and Customizing the Encoder
+
+Different steps of the pipeline can be customized and extended.
+
+- A *rule* specifies how an input character, or an input substring, is
+  mapped to a LaTeX encoded value.  A special rule type, [`RuleChain`],
+  tries several rules in order until the first match; it should be used
+  whenever the encoder should apply multiple rules.
+  
+  Each rule can be a lookup table, a callback function, or anything that
+  implements the `Rule` rust trait.
+
+- *Replacement protection* refers to additional syntax applied to the LaTeX
+  encoded symbol to ensure the generated LaTeX code is valid.  For instance,
+  the encoder might replace `'~'` by `'\textasciitilde'`; if no further
+  processing happened, the text `'~user'` would be encoded incorrectly as
+  `'\textasciitildeuser'`. Standard replacement protection strategies ensure
+  that such symbols are represented for instance as `{\textasciitilde}`,
+  which composes correctly with surrounding strings.
+
+  The standard strategy is configurable at run time; provide your own strategy
+  by implementing a trait.
+
+- Input normalization: Preprocessing applied to the string before applying
+  the rules; by default, a unicode normalize step.
+
+- *Unknown char policy*: How to handle a non-ASCII character or non-printable
+  character in the input for which the rule didn't apply (or for which none of
+  the rules of a rule chain applied).  By default, the character is left in the
+  output. Other possible behaviors include: Fail with an error, replace by a
+  fixed string, provide a custom callback function.
+
+- *Output and reports:* The encoded LaTeX code is written incrementally to an
+  output sink specified by a generic trait, so the encoded value can be appended
+  to a string or streamed to an I/O buffer. Similarly, information for the
+  report (preamble definitions, encountered unknown chars) can be accumulated
+  to any object with a custom trait implementation.
+
 
 ## License
 
@@ -104,8 +118,8 @@ Licensed under either of
 
 at your option.
 
-### Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall
-be dual licensed as above, without any additional terms or conditions.
+The builtin table was adapted from
+[pylatexenc](https://github.com/phfaist/pylatexenc)'s (MIT license), whose
+character map was in turn adapted from
+[latexcodec](https://pypi.python.org/pypi/latexcodec) (MIT license).  See
+`src/builtin/default_table.rs` for more complete license information.
