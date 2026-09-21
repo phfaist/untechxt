@@ -1,0 +1,40 @@
+[workspace]
+# A virtual workspace root has no `edition` to infer the resolver from, so it is
+# pinned here. Version 3 is also MSRV-aware: cargo declines a dependency release
+# whose own `rust-version` exceeds ours.
+resolver = "3"
+members = ["untechxt"]
+
+# Shared metadata inherited by member crates (`<field>.workspace = true`).
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+authors = ["Philippe Faist"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/phfaist/untechxt"
+
+# Workspace-wide lint policy; members opt in with `[lints] workspace = true`.
+[workspace.lints.rust]
+missing_docs = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+bare_urls = "warn"
+
+# Dependency versions live here so that the members stay in lockstep.
+[workspace.dependencies]
+# unicode-normalization for NFC decomposition etc. default-features=false so we
+# have no_std+alloc support.
+unicode-normalization = { version = "0.1", default-features = false }
+# Benchmarks only. No default features: `plotters` and `rayon` come with them,
+# and this crate's benchmarks want neither HTML reports nor a thread pool.
+criterion = { version = "0.5", default-features = false, features = [
+    "cargo_bench_support",
+] }
+
+# Profiles are only honored in the workspace root manifest.
+[profile.release]
+lto = true
+codegen-units = 1

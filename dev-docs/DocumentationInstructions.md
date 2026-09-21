@@ -4,8 +4,8 @@ Applies to rustdoc comments, `README.md`, and any other user-facing prose. The
 reader is a Rust developer who has never seen this crate and knows LaTeX only
 casually. Write plain, conventional technical English in full sentences. The
 goal is to be clear, not to be compact or clever. (These rules come from the
-maintainer's rewrite of the crate-level docs in `src/lib.rs`; its first
-sections are the model to imitate.)
+maintainer's rewrite of the crate-level docs in `rust/untechxt/src/lib.rs`;
+its first sections are the model to imitate.)
 
 ## Wording
 

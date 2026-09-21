@@ -15,6 +15,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# The cargo workspace is `rust/`, a sibling of possible future bindings, so
+# every cargo invocation runs from there.
+defaults:
+  run:
+    working-directory: rust
+
 jobs:
   test:
     name: Test (stable)
@@ -28,10 +34,14 @@ jobs:
           # a host build would not notice a dependency that links `std`.
           targets: thumbv7em-none-eabihf
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked
-      - run: cargo build --locked --no-default-features --target thumbv7em-none-eabihf
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo doc --locked --no-deps
+        with:
+          workspaces: rust
+      - run: cargo test --locked --workspace
+      # The library only, and by name: a workspace-wide build would unify the
+      # library's features with those of the members that need `std`.
+      - run: cargo build --locked -p untechxt --no-default-features --target thumbv7em-none-eabihf
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -40,11 +50,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # Keep in sync with `rust-version` in Cargo.toml.
+      # Keep in sync with `rust-version` in rust/Cargo.toml.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.86"
       - uses: Swatinem/rust-cache@v2
-      # The library only: the MSRV promise does not cover the dev-dependencies.
-      - run: cargo check --locked
-      - run: cargo check --locked --no-default-features
+        with:
+          workspaces: rust
+      # No `--all-targets`: the MSRV promise does not cover the
+      # dev-dependencies.
+      - run: cargo check --locked --workspace
+      - run: cargo check --locked -p untechxt --no-default-features

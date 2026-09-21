@@ -1,6 +1,6 @@
 *~
 .DS_Store
 
-/target
+/rust/target
 
 .claude/worktrees

@@ -1,0 +1,35 @@
+[package]
+name = "untechxt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Encode Unicode text as LaTeX source, and learn what the document preamble needs. Fast, extensible, no_std + alloc."
+readme = "../../README.md"
+keywords = ["latex", "unicode", "encoding", "text-processing", "no-std"]
+categories = ["text-processing", "encoding", "no-std"]
+
+[lints]
+workspace = true
+
+[lib]
+# The library has no benchmarks of its own, and `cargo bench` would otherwise
+# run its libtest harness first, which rejects criterion's options.
+bench = false
+
+[features]
+default = ["std"]
+# The `std` feature only adds the `std::io::Write` output adapter.
+std = []
+
+[dependencies]
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "encode"
+harness = false

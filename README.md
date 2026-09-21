@@ -122,4 +122,5 @@ The builtin table was adapted from
 [pylatexenc](https://github.com/phfaist/pylatexenc)'s (MIT license), whose
 character map was in turn adapted from
 [latexcodec](https://pypi.python.org/pypi/latexcodec) (MIT license).  See
-`src/builtin/default_table.rs` for more complete license information.
+`rust/untechxt/src/builtin/default_table.rs` for more complete license
+information.
