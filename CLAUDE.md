@@ -15,3 +15,8 @@ tables, tests, and golden file are the parts worth carrying over).
   model.
 
 - Never run `cargo fmt`.
+
+## Writing documentation
+
+- Apply instructions in `dev-docs/DocumentationInstructions.md` whenever writing
+  code documentation.

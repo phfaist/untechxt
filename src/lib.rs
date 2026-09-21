@@ -1,19 +1,16 @@
-//! Unicode-to-LaTeX encoding: turn text such as `Café — α ≤ β` into LaTeX
-//! source such as `Caf\'e {\textemdash} \ensuremath{\alpha}
-//! \ensuremath{\leq} \ensuremath{\beta}`, and learn what the document's
-//! preamble must hold for it to print.
+//! Unicode-to-LaTeX encoder.  This library turns text such as `Café — α ≤ β`
+//! into the LaTeX source `Caf\'e {\textemdash} \ensuremath{\alpha}
+//! \ensuremath{\leq} \ensuremath{\beta}`.
 //!
-//! LaTeX source is plain text, but a LaTeX document cannot always take a
-//! character as it stands: an old installation reads no UTF-8, a font has no
-//! glyph for the character, or the character is one of LaTeX's own special
-//! characters (`%`, `&`, `#`). *Encoding* a string means replacing each such
-//! character by the LaTeX that prints it — the **encoded** value — while
-//! leaving ordinary characters alone.
+//! LaTeX source typically only tolerates a restricted set of characters in its
+//! input, and some of those characters have a special meaning (notably the
+//! escape character `\\`). This library provides an *encoding* of an entire
+//! input string, meaning that it replaces each character that LaTeX either
+//! rejects or would take special action on, by some LaTeX code that displays
+//! that character.
 //!
-//! [`encode`] does that under every default setting: the builtin table of
-//! 1549 characters, each encoded value protected so that it cannot merge
-//! with the text that follows it, and a character no rule knows kept as it
-//! is.
+//! Quick start: Head to the [`encode`] function, which runs the encoder with
+//! some reasonable default settings and a built-in symbol encoding table.
 //!
 //! ```
 //! use untechxt::encode;
@@ -22,25 +19,68 @@
 //! assert_eq!(encode("100% & more"), r"100\% \& more");
 //! ```
 //!
-//! Everything in between is open: the rules that match the input, the
-//! protection written around a value, the policy for a character no rule
-//! knows, the normalization of the input, the sink the LaTeX is written to,
-//! and the report of what it needs. The crate is `#![no_std]` with
-//! [`alloc`], and its one dependency is `unicode-normalization`.
+//! The library is highly extensible and flexible: You may define custom rules
+//! for encodings, including rules that match several characters of input.  The
+//! output can be assembled as a string or directly written to an I/O
+//! buffer. Input is unicode-normalized by default, but a custom normalization
+//! step can replace the default behavior.
+//!
+//! The crate is `#![no_std]` with [`alloc`], and its one dependency is
+//! `unicode-normalization`. Its modular design aims to yield small compiled
+//! artifacts that only pull in the parts of the library that the user needs.
 //!
 //! # The encoder
 //!
 //! An [`Encoder`] holds a [`Rule`], a [`ReplacementProtection`] strategy, an
-//! [`InputNormalizer`] and an [`UnknownCharPolicy`]. It is built once,
-//! encodes any number of strings, and is immutable — and so shareable
-//! between threads whenever its rules are.
+//! [`InputNormalizer`] and an [`UnknownCharPolicy`]. It is built once, encodes
+//! any number of strings, is immutable, and can be shared across threads
+//! provided the rules are thread-safe.
 //!
-//! [`Encoder::encode`] answers a new string.
-//! [`Encoder::encode_with_report`] answers that string together with an
-//! [`EncodeReport`]: what the LaTeX needs in the document's preamble, and
-//! which characters no rule knew. [`Encoder::encode_into`] is the primitive
-//! the other two are written with — it appends to an output and a report the
-//! caller owns, which is what a document made of many fragments uses.
+//! - A *rule* specifies how an input character, or an input substring, is
+//!   mapped to a LaTeX encoded value.  A special rule type, [`RuleChain`],
+//!   tries several rules in order until the first match.  Use a [`RuleChain`]
+//!   whenever the encoder should apply multiple rules.
+//!
+//! - *Replacement protection* refers to additional syntax applied to the LaTeX
+//!   encoded symbol to ensure the generated LaTeX code is valid.  For instance,
+//!   the encoder might replace `'~'` by `'\textasciitilde'`; if no further
+//!   processing happened, the text `'~user'` would be encoded incorrectly as
+//!   `'\textasciitildeuser'`. Standard replacement protection strategies ensure
+//!   that such symbols are represented for instance as `{\textasciitilde}`,
+//!   which composes correctly with surrounding strings.
+//!
+//! - Input normalization: Preprocessing applied to the string before applying
+//!   the rules; by default, a unicode normalize step.
+//!
+//! - *Unknown char policy*: How to handle a non-ASCII character or
+//!   non-printable character in the input for which the rule didn't apply (or
+//!   for which none of the rules of a rule chain applied).  By default, the
+//!   character is left in the output. Other possible behaviors include: Fail
+//!   with an error, replace by a fixed string, provide a custom callback
+//!   function.
+//!
+//! Beyond reporting the encoded string, the encoder can yield a *report*
+//! associated with the encoding. The report contains information about which
+//! LaTeX packages or preamble definitions should be included in a document that
+//! uses the encoded string, to ensure the used LaTeX commands are properly
+//! defined and/or relevant fonts are loaded. The report may also contain
+//! information about which unknown characters were encountered.
+//!
+//! The encoder can be invoked in several ways:
+//!
+//! - The method [`Encoder::encode`] takes a string and returns a new string,
+//!   with no side effects.
+//!
+//! - The method [`Encoder::encode_with_report`] works like [`Encoder::encode`],
+//!   but it also returns an [`EncodeReport`] with information about, for
+//!   instance, LaTeX packages needed and/or additional preamble definitions
+//!   that are required.
+//!
+//! - The method [`Encoder::encode_into`] is the lower-level entry point. It
+//!   takes a generic type for where to write the encoded pieces to (see
+//!   [`OutBuffer`]), and a generic type for where to send information about
+//!   required LaTeX packages/preamble definitions and encountered unknown
+//!   characters (see [`EncodeReporter`]).
 //!
 //! ```
 //! use untechxt::{Encoder, DEFAULTS};
@@ -56,9 +96,6 @@
 //! assert_eq!(preamble, "\\usepackage{dsfont}\n\\usepackage{nicefrac}\n");
 //! ```
 //!
-//! [`encode`] is that encoder's [`encode`](Encoder::encode) with the report
-//! dropped.
-//!
 //! # Rules
 //!
 //! A [`Rule`] is offered a position in the input — a [`RuleInput`]: the whole
@@ -70,24 +107,29 @@
 //! another language passes an exception on.
 //!
 //! [`RuleChain`] is several rules as one. They are tried in order at every
-//! position and **the first match wins**: no rule is tried after a match, and
-//! no longest match is sought. A rule placed before a table therefore
-//! overrides it, and a rule placed after it fills in what the table lacks.
-//! The members are a tuple of up to twelve rules, which the compiler unrolls
-//! and inlines and which keeps each member's own type; an array; or a
-//! [`Vec`](alloc::vec::Vec) — [`DynRuleChain`] and [`LocalDynRuleChain`] are
-//! the chains of boxed rules that a configuration file or a language binding
-//! assembles at run time.
+//! position and the first match wins. A custom rule placed before a
+//! lookup-table rule therefore overrides information from the lookup table,
+//! while a custom rule placed after a lookup table can be used to fill in
+//! entries the table lacks.  No further rule is tried after a match.  If a user
+//! wants smarter matching, such as seeking the longest match, then the rules
+//! must be reordered and/or written such that first-match-wins gives the
+//! desired behavior. The members are a (static) tuple of up to twelve rules,
+//! which the compiler may unroll and inline and which keeps each member's own
+//! type; an array; or a [`Vec`](alloc::vec::Vec) — [`DynRuleChain`] and
+//! [`LocalDynRuleChain`] are the chains of boxed rules that a configuration
+//! file or a language binding assembles at run time.
 //!
 //! Rules come in three kinds.
 //!
 //! - **Tables.** A [`LookupTable`] answers for single characters. The builtin
-//!   data is [`DEFAULTS`], with the views [`NON_ASCII`] (no ASCII entry, for
-//!   input that already holds LaTeX) and [`ASCII_SPECIALS`] (the 13 ASCII
-//!   entries alone). [`DynTable`] is a table built at run time;
+//!   lookup table [`DEFAULTS`] provides reasonable encoding defaults. Further
+//!   builtin tables include [`NON_ASCII`], which only contains the non-ASCII
+//!   section of the `DEFAULTS` lookup table, and [`ASCII_SPECIALS`], a small
+//!   table that only encodes the few printable ASCII characters that have
+//!   special meaning for LaTeX.  [`DynTable`] is a table built at run time;
 //!   [`compile_static_table!`] compiles a table of your own at compile time
 //!   into one of the layouts of [`statictable`]. The crate's own tables are
-//!   rules already, and a [`LookupTable`] of your own becomes one through
+//!   rules already. Create your rule from your custom [`LookupTable`] with
 //!   [`TableRule`].
 //! - **Closures**, through [`rule_fn`]. A closure rule may hand out owned
 //!   strings, literals, `&'static Profile`s and slices of the input, but it
@@ -97,7 +139,7 @@
 //!   into another language. [`Rule`] requires only
 //!   [`Debug`](core::fmt::Debug) — not `Send` or `Sync`, so that a rule
 //!   holding a JavaScript callback or an [`Rc`](alloc::rc::Rc) is possible;
-//!   an [`Encoder`] is `Send` and `Sync` exactly when its rules are.
+//!   an [`Encoder`] is `Send` and `Sync` exactly when its rule(s) are.
 //!
 //! ```
 //! use untechxt::{
@@ -180,13 +222,16 @@
 //!
 //! // Math output: the same values go in bare, ended by a space; a text value
 //! // is the one that has to be wrapped.
-//! let math = Encoder::new(&DEFAULTS).with_protection(StandardProtection::math_mode());
+//! let math = Encoder::new(&DEFAULTS).with_protection(
+//!     StandardProtection::math_mode()
+//! );
 //! assert_eq!(math.encode("α≤β").unwrap(), r"\alpha \leq \beta ");
 //! assert_eq!(math.encode("é").unwrap(), r"\textnormal{\'e}");
 //!
 //! // A strategy of its own: braces around every value.
-//! let compat =
-//!     Encoder::new(&DEFAULTS).with_protection(BracesAroundAll(StandardProtection::text_mode()));
+//! let compat = Encoder::new(&DEFAULTS).with_protection(
+//!     BracesAroundAll(StandardProtection::text_mode())
+//! );
 //! assert_eq!(compat.encode("Café — α").unwrap(),
 //!            r"Caf{\'e} {\textemdash} {\ensuremath{\alpha}}");
 //! ```
@@ -222,8 +267,9 @@
 //! assert_eq!(out, "ธ");
 //! assert!(report.unknown_chars.contains(&'ธ'));
 //!
-//! let spelled_out =
-//!     Encoder::new(&DEFAULTS).with_unknown_chars(UnknownCharPolicy::callback(unknown_unihex));
+//! let spelled_out = Encoder::new(&DEFAULTS).with_unknown_chars(
+//!     UnknownCharPolicy::callback(unknown_unihex)
+//! );
 //! assert_eq!(spelled_out.encode("ธ").unwrap(),
 //!            r"\ensuremath{\langle}\texttt{U+0E18}\ensuremath{\rangle}");
 //! ```
@@ -372,6 +418,7 @@
 //! plain function [`unknown_unihex`] handed to
 //! [`UnknownCharPolicy::callback`]. Positions are byte offsets, where
 //! pylatexenc counts code points.
+
 #![no_std]
 
 extern crate alloc;
