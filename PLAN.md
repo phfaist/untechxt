@@ -290,14 +290,18 @@ math versus text mode, or of streaming output; this library adds all three.
 ### Tables
 
 - Builtin tables: `DEFAULTS` (all entries), `NON_ASCII`, `ASCII_SPECIALS`
-  (the 13 entries `" # $ % & < > \ ^ _ { } ~`), from one source list. The
-  latter two are filtered views that share the compiled data of `DEFAULTS`.
+  (the 13 entries `" # $ % & < > \ ^ _ { } ~`), from one source list.
+  `NON_ASCII` is a filtered view that shares the compiled data of `DEFAULTS`;
+  `ASCII_SPECIALS` is a small table compiled by itself from the ASCII head
+  of the list.
 - The builtin tables have the opaque public type `BuiltinTable` (a newtype
   with a private field around one of the layout structs), so the table layout
   stays an implementation detail and can change without breaking the API.
   The three layout structs themselves are public for users' own tables.
 - No cargo features for binary size: unused statics are dropped at link
-  time. More builtin tables are anticipated (see "Open items").
+  time. The linker drops a static whole or not at all, so a view of a static
+  table links all of it; that is why `ASCII_SPECIALS` is not a view. More
+  builtin tables are anticipated (see "Open items").
 - There is no per-char lookup on the encoder (normalization and protection
   make it fragile); callers use the `encode` family on a one-char string.
   Tables offer their own `lookup(ch)`.
@@ -789,9 +793,20 @@ pub struct ExceptAscii<T>(pub T); // view: answers only for non-ASCII chars
   order (used by the tests, and useful for tooling).
 - `pub static DEFAULTS: BuiltinTable`;
   `pub static NON_ASCII: ExceptAscii<&'static BuiltinTable>`;
-  `pub static ASCII_SPECIALS: OnlyAscii<&'static BuiltinTable>`. The views
-  hold a reference to the `DEFAULTS` static, so all three share one copy of
-  the data. `ExceptAscii` reports `AsciiSet::EMPTY` as its triggers.
+  `pub static ASCII_SPECIALS: BuiltinTable`. `NON_ASCII` holds a reference to
+  the `DEFAULTS` static and shares its copy of the data; `ExceptAscii`
+  reports `AsciiSet::EMPTY` as its triggers. `ASCII_SPECIALS` is compiled a
+  second time from the ASCII head of `ENTRIES`, which a `const fn` slices off
+  (the list is sorted), so the source is not repeated. It was at first the
+  view `OnlyAscii(&DEFAULTS)`, and a program that used it alone then linked
+  the whole of `DEFAULTS`: 459,824 bytes, the same as with `DEFAULTS` itself,
+  against 375,040 with a hand-written table of the 13 entries (the program of
+  `examples/size_check.rs`, release, LTO). Its profile array is a one-element
+  array of its own rather than `&PROFILES`, which would link every `\UnxT`
+  snippet: all 13 entries name profile 0, and the macro's index check makes
+  it a compile error if one ever names another. As compiled now the same
+  program is 375,088 bytes, and one that links both tables pays 1,264 bytes
+  for the second copy.
 - Keep the approach of `src/statictable.rs`: `const fn` builders turn a
   sorted entry slice into one of three layouts, each its own public struct
   (`StaticTableBinarySearch`: binary search over a separate key array;

@@ -79,8 +79,9 @@ impl<T: LookupTable> Rule for TableRule<T> {
 
 /// A view of a table that answers for ASCII characters alone.
 ///
-/// The builtin `ASCII_SPECIALS` table is this view of the full builtin table,
-/// so that both share one copy of the data.
+/// A view holds its whole table, and a static table behind it is linked
+/// whole. The builtin `ASCII_SPECIALS` is for that reason not this view of
+/// the full builtin table, but a small table compiled by itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct OnlyAscii<T>(pub T);
 

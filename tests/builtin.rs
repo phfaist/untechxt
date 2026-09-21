@@ -1,5 +1,5 @@
 //! The builtin tables (step 3): that the data compiled, that the three tables
-//! are the views of it they claim to be, and that an encoder over them says
+//! hold the parts of it they claim to hold, and that an encoder over them says
 //! what a document needs. The suite ported from the initial port, with the
 //! conformance golden, comes in step 4.
 
@@ -74,6 +74,25 @@ fn the_ascii_specials_are_the_thirteen_and_nothing_else() {
         );
     }
     assert_eq!(ASCII_SPECIALS.lookup('\u{e9}'), None);
+}
+
+#[test]
+fn the_ascii_specials_are_the_ascii_entries_of_the_full_table() {
+    // A table compiled by itself, from the head of the same source list: it
+    // must say what `DEFAULTS` says, profile reference included.
+    assert_eq!(ASCII_SPECIALS.len(), 13);
+    assert!(!ASCII_SPECIALS.is_empty());
+    assert!(ASCII_SPECIALS.iter().eq(DEFAULTS.iter().filter(|(ch, _)| ch.is_ascii())));
+    for byte in 0u8..128 {
+        let ch = byte as char;
+        assert_eq!(ASCII_SPECIALS.lookup(ch), DEFAULTS.lookup(ch), "{ch:?}");
+    }
+    assert_eq!(ASCII_SPECIALS.ascii_keys(), DEFAULTS.ascii_keys());
+    // Block 0 reaches up to U+00FF, and its upper half is not ASCII.
+    for code_point in 0x80u32..0x100 {
+        let ch = char::from_u32(code_point).unwrap();
+        assert_eq!(ASCII_SPECIALS.lookup(ch), None, "{ch:?}");
+    }
 }
 
 #[test]
@@ -223,5 +242,5 @@ fn every_unxt_command_the_entries_write_is_declared_by_the_entry_s_own_profile()
 fn the_debug_forms_name_the_tables() {
     assert!(format!("{DEFAULTS:?}").starts_with("BuiltinTable { len: 1549"));
     assert!(format!("{NON_ASCII:?}").starts_with("ExceptAscii(BuiltinTable"));
-    assert!(format!("{ASCII_SPECIALS:?}").starts_with("OnlyAscii(BuiltinTable"));
+    assert!(format!("{ASCII_SPECIALS:?}").starts_with("BuiltinTable { len: 13"));
 }

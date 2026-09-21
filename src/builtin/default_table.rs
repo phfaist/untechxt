@@ -20,8 +20,9 @@
 //!
 //! - `ENTRIES`, below — a character, its LaTeX spelling, the [`ValueMode`] of
 //!   that spelling and the [`ProfileIndex`] of the preamble it needs. Sorted
-//!   by character. `mod.rs` compiles it into the one static table `DEFAULTS`,
-//!   of which `NON_ASCII` and `ASCII_SPECIALS` are views.
+//!   by character. `mod.rs` compiles it into the static table `DEFAULTS`, of
+//!   which `NON_ASCII` is a view, and compiles its ASCII head once more into
+//!   the small table `ASCII_SPECIALS`.
 //! - The **preamble chunks** of `needs_profiles.rs`, which some spellings
 //!   need: each a LaTeX package with the options it is loaded with, or a block
 //!   of declarations no package makes.
