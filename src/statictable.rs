@@ -45,10 +45,13 @@
 //! `BuiltinTable` keeps it for the builtin data.
 //!
 //! - [`StaticTableBinarySearch`]: a sorted array of the characters, searched
-//!   by bisection. The smallest of the three.
+//!   by bisection. No index of its own: four bytes per entry beyond the
+//!   payload, and nothing per block.
 //! - [`StaticTableTwoLevelLinear`]: one block per distinct `code point >> 8`,
 //!   found by a linear scan over the blocks, then a linear scan over the low
-//!   bytes inside the block. One byte per entry beyond the payload.
+//!   bytes inside the block. One byte per entry beyond the payload, and six
+//!   per block — the most compact of the three unless the entries are spread
+//!   thinly over very many blocks.
 //! - [`StaticTableTwoLevelDirect`]: the same blocks, each with a 256-slot
 //!   index from the low byte straight to the entry. 512 bytes per block, and
 //!   a lookup inside a block is one load.
@@ -167,8 +170,8 @@ impl StaticEntry {
 /// characters.
 ///
 /// Build one with [`compile_static_table!`] and the layout name
-/// `binary_search`. It is the smallest of the three layouts: the characters,
-/// the payloads, and nothing else.
+/// `binary_search`. It is the layout with no index of its own: the
+/// characters, the payloads, and nothing else.
 #[derive(Clone, Copy)]
 pub struct StaticTableBinarySearch {
     /// The characters of the entries, strictly ascending.

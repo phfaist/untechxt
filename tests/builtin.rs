@@ -7,7 +7,10 @@ use std::collections::BTreeSet;
 
 use untechxt::builtin::default_table::ENTRIES;
 use untechxt::builtin::needs_profiles::{AMSSYMB, PROFILES};
-use untechxt::{ChunkPreamble, Encoder, LookupTable, ASCII_SPECIALS, DEFAULTS, NON_ASCII};
+use untechxt::{
+    ChunkPreamble, Encoder, LookupTable, Profile, ProfileIndex,
+    ReplacementProtectionHint as Hint, ValueTermination, ASCII_SPECIALS, DEFAULTS, NON_ASCII,
+};
 
 /// The 13 ASCII characters the builtin table has entries for.
 const ASCII_ENTRIES: &str = "\"#$%&<>\\^_{}~";
@@ -34,9 +37,24 @@ fn lookup_agrees_with_iter_over_the_whole_table() {
 
 #[test]
 fn iter_yields_the_source_entries_in_order() {
-    for ((ch, entry), &(source_ch, encoded, ..)) in DEFAULTS.iter().zip(ENTRIES) {
+    for ((ch, entry), &(source_ch, encoded, mode, profile)) in DEFAULTS.iter().zip(ENTRIES) {
         assert_eq!(ch, source_ch);
         assert_eq!(entry.encoded, encoded);
+        // The mode is the source column, the termination is read off the
+        // spelling, and the profile index is the position in `PROFILES` —
+        // index 0 answering `None`.
+        assert_eq!(
+            entry.hint,
+            Hint::Value { mode, termination: ValueTermination::inspect(encoded) },
+            "{ch:?}"
+        );
+        match entry.needs {
+            None => assert_eq!(profile, ProfileIndex::NONE, "{ch:?} names a profile but has none"),
+            Some(needs) => assert!(
+                std::ptr::eq(needs, &PROFILES[profile.0 as usize]),
+                "{ch:?} resolves to a profile other than the one it names"
+            ),
+        }
     }
 }
 
@@ -165,32 +183,40 @@ fn the_chunk_identifiers_are_distinct_and_name_one_chunk_each() {
 }
 
 #[test]
-fn every_unxt_command_the_entries_write_is_declared_by_a_chunk() {
-    let declared: String =
-        PROFILES.iter().flat_map(|profile| profile.chunks()).fold(String::new(), |mut all, chunk| {
-            if let ChunkPreamble::Snippet(text) = &chunk.preamble {
-                all.push_str(text);
-                all.push('\n');
-            }
-            all
-        });
+fn every_unxt_command_the_entries_write_is_declared_by_the_entry_s_own_profile() {
+    /// The declarations of the snippet chunks of one profile, run together.
+    fn declarations(profile: Option<&Profile>) -> String {
+        profile.into_iter().flat_map(|profile| profile.chunks()).fold(
+            String::new(),
+            |mut all, chunk| {
+                if let ChunkPreamble::Snippet(text) = &chunk.preamble {
+                    all.push_str(text);
+                    all.push('\n');
+                }
+                all
+            },
+        )
+    }
+
     let mut used: BTreeSet<String> = BTreeSet::new();
-    for (_, entry) in DEFAULTS.iter() {
+    for (ch, entry) in DEFAULTS.iter() {
+        let declared = declarations(entry.needs);
         let mut rest = entry.encoded;
         while let Some(at) = rest.find("\\UnxT") {
             let tail = &rest[at + 1..];
             let end = tail.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(tail.len());
-            used.insert(tail[..end].to_string());
+            let command = &tail[..end];
+            // The chunk that declares the command must be one the entry's own
+            // profile holds: a profile that leaves it out is a silent bug.
+            assert!(
+                declared.contains(&format!("{{\\{command}}}")),
+                "{ch:?} writes \\{command}, which its profile does not declare"
+            );
+            used.insert(command.to_string());
             rest = &tail[end..];
         }
     }
     assert_eq!(used.len(), 36);
-    for command in &used {
-        assert!(
-            declared.contains(&format!("{{\\{command}}}")),
-            "no chunk declares \\{command}"
-        );
-    }
 }
 
 #[test]
