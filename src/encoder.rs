@@ -227,6 +227,13 @@ impl<R: Rule, P: ReplacementProtection, N: InputNormalizer> Encoder<R, P, N> {
                         }
                     }
                     pos += replacement.consumed();
+                    // A replacement built from the `RuleInput` the rule was
+                    // handed cannot land here; only a rule that fabricated a
+                    // `RuleInput` over another string can (out of contract).
+                    debug_assert!(
+                        text.is_char_boundary(pos),
+                        "rule consumed past the end or into the middle of a char"
+                    );
                     run_start = pos;
                 }
                 // Printable ASCII, and the three white-space characters, stay

@@ -1,5 +1,6 @@
 //! [`OutBuffer`]: where the encoder writes, and the adapters that carry its
-//! output to a [`core::fmt::Write`] or a [`std::io::Write`].
+//! output to a [`core::fmt::Write`] or, with the crate feature `std`, to a
+//! `std::io::Write`.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -11,7 +12,8 @@ use crate::rule::BoxError;
 /// [`String`] implements it, and so the plain case costs nothing: the error
 /// check disappears when the compiler inlines the call. The trait exists so
 /// that output can stream — to a formatter ([`FmtOut`]), to a file or a
-/// socket ([`IoOut`]) — without assembling the whole string first.
+/// socket (`IoOut`, with the crate feature `std`) — without assembling the
+/// whole string first.
 ///
 /// The error type is the fixed [`BoxError`], rather than an associated type
 /// that would spread through every signature of the crate. An I/O error is

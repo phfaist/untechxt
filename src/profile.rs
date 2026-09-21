@@ -195,10 +195,12 @@ impl PreambleNeeds {
     /// Adds one chunk to the list its kind belongs in, if no chunk of that
     /// identifier is there already.
     fn include_chunk(&mut self, chunk: &Chunk) {
-        let list = if chunk.is_package() { &mut self.packages } else { &mut self.snippets };
-        if !list.iter().any(|held| held.id == chunk.id) {
-            list.push(chunk.clone());
+        // Same id means same chunk, whichever list holds it.
+        if self.chunks().any(|held| held.id == chunk.id) {
+            return;
         }
+        let list = if chunk.is_package() { &mut self.packages } else { &mut self.snippets };
+        list.push(chunk.clone());
     }
 }
 

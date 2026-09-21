@@ -122,8 +122,12 @@ math versus text mode, or of streaming output; this library adds all three.
   or `&self.field` without conversions. Tables stay allocation-free.
 - `EncodedReplacement` has private fields and is built only through
   `RuleInput` (`replace_char`, `replace_prefix`, `try_replace_prefix`). A zero
-  or out-of-range `consumed` therefore cannot be constructed, the encoder
-  needs no per-match validation, and there is no "invalid consumption" error.
+  or out-of-range `consumed` therefore cannot be constructed from the
+  `RuleInput` the encoder handed to the rule, the encoder needs no per-match
+  validation, and there is no "invalid consumption" error. A rule that
+  fabricates a `RuleInput` over some other string (`RuleInput::new` is public
+  for testing rules) is out of contract; the encoder then only checks the
+  advanced position in debug builds (`debug_assert!` on the char boundary).
 - `RuleInput<'s>` is a small `Copy` struct with private fields and accessors,
   so context can be added later without breaking every `Rule` impl.
 - Closures become rules through `rule_fn(..)`. A blanket
@@ -555,8 +559,12 @@ pub fn unknown_unihex(ch: char) -> String;
 pub struct Encoder<R, P = StandardProtection, N = NormalizeNfc> { .. }
 impl<R: Rule> Encoder<R> { pub fn new(rule: R) -> Self; }
 impl<R: Rule, P: ReplacementProtection, N: InputNormalizer> Encoder<R, P, N> {
-    pub fn with_protection<P2>(self, p: P2) -> Encoder<R, P2, N>;
-    pub fn with_normalizer<N2>(self, n: N2) -> Encoder<R, P, N2>;
+    // The replacement is bound too, so that an encoder never holds a type
+    // that is not a strategy or not a normalizer.
+    pub fn with_protection<P2: ReplacementProtection>(self, p: P2)
+        -> Encoder<R, P2, N>;
+    pub fn with_normalizer<N2: InputNormalizer>(self, n: N2)
+        -> Encoder<R, P, N2>;
     pub fn with_unknown_chars(self, policy: UnknownCharPolicy) -> Self;
     pub fn protection(&self) -> &P;
 

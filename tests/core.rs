@@ -7,12 +7,12 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use untechxt::{
-    nfc, rule_fn, unknown_unihex, AsciiSet, BracesAroundAll, Chunk, ChunkPreamble, DynRuleChain,
-    DynTable, EncodeError, EncodeReport, EncodeReporter, Encoder, FmtOut, LocalDynRuleChain,
-    LookupTable, MacroNameProtection, ModeWrapper, NoNormalization, NoReport, OutBuffer,
-    OutputMode, PreambleNeeds, Profile, ProtectInput, ReplacementProtection,
-    ReplacementProtectionHint as Hint, Rule, RuleChain, RuleInput, RuleResult, StandardProtection,
-    TableRule, UnknownCharPolicy, ValueTermination,
+    nfc, rule_fn, unknown_unihex, AsciiSet, BoxError, BracesAroundAll, Chunk, ChunkPreamble,
+    DynRuleChain, DynTable, EncodeError, EncodeReport, EncodeReporter, Encoder, ExceptAscii,
+    FmtOut, LocalDynRuleChain, LookupTable, MacroNameProtection, ModeWrapper, NoNormalization,
+    NoReport, OnlyAscii, OutBuffer, OutputMode, PreambleNeeds, Profile, ProtectInput,
+    ReplacementProtection, ReplacementProtectionHint as Hint, Rule, RuleChain, RuleInput,
+    RuleResult, StandardProtection, TableRule, UnknownCharPolicy, ValueTermination,
 };
 
 // ---------------------------------------------------------------- fixtures
@@ -234,6 +234,27 @@ fn replace_prefix_panics_inside_a_character() {
     let _ = input.replace_prefix(1, "x", Hint::DoNotProtect);
 }
 
+#[test]
+fn an_invalid_length_becomes_a_rule_error_through_the_question_mark() {
+    // What a rule driven from another language does: it cannot check the
+    // length itself, so `?` turns a bad one into a rule error.
+    let greedy = rule_fn(|input: RuleInput<'_>| -> RuleResult<'_> {
+        if input.ch() == '\u{e9}' {
+            Ok(Some(input.try_replace_prefix(10, "x", Hint::DoNotProtect)?))
+        } else {
+            Ok(None)
+        }
+    });
+    let error = Encoder::new(greedy).encode("a\u{e9}").unwrap_err();
+    match error {
+        EncodeError::Rule { position, ref source } => {
+            assert_eq!(position, 1);
+            assert!(source.to_string().contains("consume 10 bytes at byte 1"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 // --------------------------------------------------------------- protection
 
 /// The value `encoded`, protected by `protection` under the hint `hint`.
@@ -336,6 +357,60 @@ fn the_output_mode_reaches_the_encoder() {
     assert_eq!(
         encoder.encode("\u{3b1} \u{2014} \u{e9}").unwrap(),
         "\\alpha  \\textnormal{\\textemdash} \\textnormal{\\'e}"
+    );
+}
+
+#[test]
+fn a_protection_strategy_can_be_written_outside_the_crate() {
+    /// pylatexenc's `braces-almost-all`, written with the public API alone:
+    /// the mode rendering of a [`StandardProtection`], in braces when it
+    /// starts with a backslash.
+    #[derive(Debug)]
+    struct BracesAlmostAll(StandardProtection);
+
+    impl ReplacementProtection for BracesAlmostAll {
+        fn write_protected<O: OutBuffer, Rep: EncodeReporter>(
+            &self,
+            out: &mut O,
+            report: &mut Rep,
+            item: ProtectInput<'_>,
+        ) -> Result<(), BoxError> {
+            let rendered = match item.hint() {
+                Hint::DoNotProtect => return out.push_str(item.encoded()),
+                // The wildcard arm is what `#[non_exhaustive]` asks for.
+                _ => match self.0.mode_wrapper_for(item.hint()) {
+                    Some(wrap) => {
+                        if let Some(needs) = wrap.needs {
+                            report.report_needs(needs);
+                        }
+                        format!("{}{}{}", wrap.open, item.encoded(), wrap.close)
+                    }
+                    None => item.encoded().to_string(),
+                },
+            };
+            if rendered.starts_with('\\') {
+                out.push_str("{")?;
+                out.push_str(&rendered)?;
+                out.push_str("}")
+            } else {
+                out.push_str(&rendered)
+            }
+        }
+    }
+
+    let protection = BracesAlmostAll(StandardProtection::text_mode());
+    assert_eq!(protect(&protection, r"\'e", Hint::text_only(r"\'e")), r"{\'e}");
+    assert_eq!(
+        protect(&protection, r"\alpha", Hint::math_only(r"\alpha")),
+        r"{\ensuremath{\alpha}}"
+    );
+    assert_eq!(protect(&protection, "fi", Hint::any_mode("fi")), "fi");
+    assert_eq!(protect(&protection, r"\textbf{a}", Hint::DoNotProtect), r"\textbf{a}");
+
+    let encoder = Encoder::new(small_table()).with_protection(protection);
+    assert_eq!(
+        encoder.encode("Caf\u{e9} \u{3b1}").unwrap(),
+        r"Caf{\'e} {\ensuremath{\alpha}}"
     );
 }
 
@@ -494,6 +569,21 @@ fn the_ascii_fast_path_gives_the_same_answer_as_a_rule_that_triggers_everywhere(
     assert_eq!(narrow.encode(text).unwrap(), "a\\%b\\'e\t{\\textemdash} ...");
 }
 
+#[test]
+fn ascii_sets_are_built_from_characters_ranges_and_predicates() {
+    let lower = AsciiSet::from_fn(|byte| byte.is_ascii_lowercase());
+    assert!(lower.contains(b'a') && !lower.contains(b'A'));
+    // Nothing outside ASCII is ever in a set: the shift is guarded.
+    assert!(!lower.contains(0x80) && !AsciiSet::ALL.contains(0xff));
+    assert_eq!(AsciiSet::range(b'a'..=b'c'), AsciiSet::of("abc"));
+    assert_eq!(AsciiSet::of("ab") | AsciiSet::of("bc"), AsciiSet::of("abc"));
+    assert_eq!(AsciiSet::of("ab").union(AsciiSet::EMPTY), AsciiSet::of("ab"));
+    assert!(AsciiSet::EMPTY.is_empty() && !AsciiSet::ALL.is_empty());
+    // An empty range gives the empty set rather than panicking.
+    let (start, end) = (5u8, 4u8);
+    assert!(AsciiSet::range(start..=end).is_empty());
+}
+
 // ------------------------------------------------------------------- needs
 
 #[test]
@@ -600,6 +690,44 @@ fn a_preamble_needs_is_itself_a_reporter() {
     assert_eq!(needs.chunks().map(|c| &*c.id).collect::<Vec<_>>(), ["fontenc-t2a"]);
 }
 
+#[test]
+fn a_profile_is_reported_again_only_when_it_is_not_the_one_last_reported() {
+    /// A reporter that keeps every call, so that repeats show up.
+    #[derive(Debug, Default)]
+    struct EveryCall(Vec<String>);
+    impl EncodeReporter for EveryCall {
+        fn report_needs(&mut self, profile: &Profile) {
+            self.0.push(profile.chunks()[0].id.to_string());
+        }
+    }
+
+    let mut table = DynTable::new();
+    table.insert_with_needs('\u{44f}', r"\cyrya", Hint::text_only(r"\cyrya"), FONTENC.clone());
+    table.insert_with_needs('\u{2135}', r"\aleph", Hint::math_only(r"\aleph"), AMSMATH.clone());
+    table.insert('\u{2014}', r"\textemdash", Hint::text_only(r"\textemdash"));
+    let encoder = Encoder::new(table);
+
+    // An immediate repeat is skipped; the same profile after another one is
+    // reported again.
+    let mut report = EveryCall::default();
+    encoder
+        .encode_into("\u{44f}\u{44f}\u{2135}\u{44f}", &mut String::new(), &mut report)
+        .unwrap();
+    assert_eq!(report.0, ["fontenc-t2a", "amsmath", "fontenc-t2a"]);
+
+    // A value that needs nothing does not report, and so does not clear the
+    // shortcut either.
+    let mut report = EveryCall::default();
+    encoder.encode_into("\u{44f}\u{2014}\u{44f}", &mut String::new(), &mut report).unwrap();
+    assert_eq!(report.0, ["fontenc-t2a"]);
+
+    // The shortcut is a local of one call: the next call reports afresh.
+    let mut report = EveryCall::default();
+    encoder.encode_into("\u{44f}", &mut String::new(), &mut report).unwrap();
+    encoder.encode_into("\u{44f}", &mut String::new(), &mut report).unwrap();
+    assert_eq!(report.0, ["fontenc-t2a", "fontenc-t2a"]);
+}
+
 // ------------------------------------------------------------------ output
 
 #[test]
@@ -665,6 +793,41 @@ fn what_is_reported_does_not_change_what_is_written() {
     assert_eq!(encoder.encode(text).unwrap(), with_report);
 }
 
+#[test]
+fn an_error_hands_out_the_error_it_wraps() {
+    use std::error::Error as _;
+
+    /// An output that refuses everything.
+    struct Refusing;
+    impl OutBuffer for Refusing {
+        fn push_str(&mut self, _: &str) -> Result<(), BoxError> {
+            Err("the output is closed".into())
+        }
+    }
+
+    let failing = rule_fn(|input: RuleInput<'_>| -> RuleResult<'_> {
+        if input.ch() == '\u{e9}' {
+            Err("the callback raised".into())
+        } else {
+            Ok(None)
+        }
+    });
+    let error = Encoder::new(failing).encode("\u{e9}").unwrap_err();
+    assert_eq!(error.source().unwrap().to_string(), "the callback raised");
+
+    let error = Encoder::new(small_table())
+        .encode_into("\u{e9}", &mut Refusing, &mut NoReport)
+        .unwrap_err();
+    assert_eq!(error.source().unwrap().to_string(), "the output is closed");
+
+    // An unknown character wraps nothing.
+    let error = Encoder::new(small_table())
+        .with_unknown_chars(UnknownCharPolicy::Fail)
+        .encode("\u{3b2}")
+        .unwrap_err();
+    assert!(error.source().is_none());
+}
+
 // ------------------------------------------------------------------ tables
 
 #[test]
@@ -711,6 +874,32 @@ fn a_user_table_becomes_a_rule_through_table_rule() {
         Encoder::new(TableRule(OneEntry)).encode_with_report("a\u{2014}").unwrap();
     assert_eq!(out, r"a{\textemdash}");
     assert_eq!(report.needs.chunks().map(|c| &*c.id).collect::<Vec<_>>(), ["amsmath"]);
+}
+
+#[test]
+fn the_ascii_and_non_ascii_views_answer_for_their_half_alone() {
+    let mut table = small_table();
+    table.insert('%', r"\%", Hint::text_only(r"\%"));
+
+    let ascii_only = OnlyAscii(&table);
+    assert_eq!(ascii_only.ascii_keys(), AsciiSet::of("%"));
+    assert!(ascii_only.lookup('%').is_some());
+    assert!(ascii_only.lookup('\u{e9}').is_none());
+    assert_eq!(Encoder::new(OnlyAscii(&table)).encode("%\u{e9}").unwrap(), "\\%\u{e9}");
+
+    // The replacement for `non_ascii_only`: it triggers on no ASCII character,
+    // so the encoder never consults it for one.
+    let non_ascii = ExceptAscii(&table);
+    assert_eq!(non_ascii.ascii_keys(), AsciiSet::EMPTY);
+    assert!(non_ascii.lookup('%').is_none());
+    assert!(non_ascii.lookup('\u{e9}').is_some());
+    assert_eq!(Encoder::new(ExceptAscii(&table)).encode("%\u{e9}").unwrap(), r"%\'e");
+
+    // A view is a table too, and so it also goes through `TableRule`.
+    assert_eq!(
+        Encoder::new(TableRule(ExceptAscii(&table))).encode("%\u{e9}").unwrap(),
+        r"%\'e"
+    );
 }
 
 // ------------------------------------------------------------------- debug
