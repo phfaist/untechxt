@@ -370,6 +370,13 @@ src/
                              with provenance notes and both MIT notices
 tools/
   migrate_tables.py          one-off data migration script (step 3)
+benches/
+  encode.rs                  criterion benchmarks: five corpora against the
+                             three table layouts, the report, the normalizer
+examples/
+  size_check.rs              the smallest program that uses the encoder, for
+  size_check_nfc.rs          `cargo bloat` / `cargo asm`; the pair differs
+                             only in the input normalizer
 ```
 
 ### Core API sketch
@@ -967,11 +974,56 @@ hand-maintained source of truth.
   shrink in sub/superscripts; `\text` sizes correctly but needs amsmath;
   `\textnormal` is believed to behave like `\mbox` alone and like `\text`
   once amsmath is loaded (to be verified).
-- Static table layout and payload packing (for example one string blob with
-  offsets instead of one `&str` per entry): decide by benchmark. The builtin
-  data spans 22 distinct 256-code-point blocks, and both two-level layouts
-  find the block by a linear scan, so they may lose to the binary search
-  (about 11 probes); a direct first-level index is a further option.
+- **Decided (step 6): the builtin table keeps `two_level_direct_index`.**
+  `benches/encode.rs` compiles the same 1549 entries in all three layouts and
+  encodes five corpora with each — text mode, `NoReport`,
+  `UnknownCharPolicy::Keep`. Numbers are the smallest of three criterion runs
+  pinned to one core on an otherwise idle machine (single runs drift by up to
+  25% there, which is why the minimum is taken), as time for the whole corpus
+  and throughput in MiB/s; the last column is `DEFAULTS` itself, the same
+  layout seen through `BuiltinTable`, and it agrees with the third column
+  inside the noise:
+
+  | corpus (bytes)      |  binary_search |  two_level_linear | two_level_direct_index |     `DEFAULTS` |
+  |---------------------|---------------:|------------------:|-----------------------:|---------------:|
+  | ascii_source (1233) |  3.74 µs / 315 |     3.59 µs / 327 |          2.36 µs / 498 |  2.48 µs / 475 |
+  | accented (1144)     |  3.13 µs / 349 |     4.41 µs / 248 |          2.88 µs / 379 |  2.71 µs / 403 |
+  | greek_math (1269)   | 12.63 µs /  96 |    19.19 µs /  63 |          9.18 µs / 132 |  9.25 µs / 131 |
+  | cyrillic (1636)     | 18.21 µs /  86 |    32.07 µs /  49 |         15.00 µs / 104 | 13.10 µs / 119 |
+  | cjk (1045)          |  7.61 µs / 131 |     7.77 µs / 128 |          7.11 µs / 140 |  7.13 µs / 140 |
+
+  The direct index wins on every corpus: 1.07 to 1.58 times the binary
+  search, 1.09 to 2.14 times the two-level linear layout. The worry above was
+  half right — the linear block scan does cost — but it is the *inner* scan
+  that decides: `two_level_linear` walks up to 256 low bytes inside a block
+  and loses worst exactly where a block is densely used (Cyrillic, 32.07 µs
+  against 15.00 µs). With one load inside the block, the same 22-block linear
+  first level still beats bisection. The one case where the three layouts
+  nearly tie is CJK, which the table does not cover at all: there the block
+  scan runs to the end for every character. A direct first-level index would
+  buy something there and nowhere else, so it is not implemented; it stays a
+  possibility if a table with many more blocks is added.
+
+  Payload packing (one string blob with offsets instead of one `&str` per
+  entry) was **not** measured and stays open.
+
+  Two side measurements from the same bench file. `EncodeReport` costs
+  nothing measurable against `NoReport` — 2.40 µs against 2.66 µs on the
+  accented corpus, 13.39 µs against 13.67 µs on the Cyrillic one, where every
+  entry names a `fontenc` profile — because the encoder skips immediate
+  repeats of a profile. `NormalizeNfc` over text that already is NFC costs
+  half again the encoding itself: 2.46 µs against 1.62 µs with
+  `NoNormalization` on the accented corpus, for the quick check alone.
+
+  The two size claims of this plan were checked on `examples/size_check.rs`
+  and `examples/size_check_nfc.rs` (release, LTO). Under `NoReport` with a
+  static chain, `cargo asm` finds the whole encoder loop inlined into `main`
+  with not one mention of the needs or report code, and `nm` finds no
+  `PreambleNeeds`, `EncodeReport` or `report_needs` symbol; the profile
+  *data* stays linked, since the table holds a reference to it. With
+  `NoNormalization` the `unicode-normalization` tables are gone: 488,888
+  bytes against 618,752, `.rodata` 56,752 against 169,816, and no
+  `unicode_normalization` symbol left in the binary.
 - `unicode-xml` table: pylatexenc's generated dict
   (`latexencode/_uni2latexmap_xml.py`, 2233 entries) has no mode column, no
   needs, and no license header, and it mixes bare math macros with text
