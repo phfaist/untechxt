@@ -84,6 +84,7 @@ pub mod profile;
 pub mod replacement_protection;
 pub mod report;
 pub mod rule;
+pub mod statictable;
 pub mod unknown_char;
 
 pub use crate::asciiset::AsciiSet;
@@ -105,5 +106,8 @@ pub use crate::report::{EncodeReport, EncodeReporter, NoReport};
 pub use crate::rule::{
     rule_fn, BoxError, EncodedReplacement, InvalidPrefixLength, Rule, RuleFn, RuleInput,
     RuleResult,
+};
+pub use crate::statictable::{
+    StaticTableBinarySearch, StaticTableTwoLevelDirect, StaticTableTwoLevelLinear,
 };
 pub use crate::unknown_char::{unknown_unihex, UnknownCharPolicy};
