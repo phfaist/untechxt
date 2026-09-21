@@ -12,8 +12,8 @@
 //! `BuiltinTable` newtype around whichever layout the crate ships. Every run
 //! is text mode with `NoReport`, the encoder's defaults. Three more groups
 //! measure what the report costs (on the accented corpus, whose entries need
-//! nothing in the preamble, and on the Cyrillic one, whose entries all name a
-//! profile) and what the input normalizer costs.
+//! next to nothing in the preamble, and on the Cyrillic one, whose letters all
+//! name a profile) and what the input normalizer costs.
 //!
 //! The encoder is built once per benchmark and reused, which is how an
 //! encoder is meant to be used; the timed part is one `encode` call, output
@@ -91,7 +91,7 @@ printf '%s\t%s\n' "$name" "$value" | awk '{ print $1 "_" $2 }' > out.tsv
 
 /// Accented Latin prose: French, Spanish, Portuguese and German, in NFC, so
 /// that `NormalizeNfc` borrows the input instead of rebuilding it. Roughly one
-/// character in ten is a table lookup.
+/// character in twenty is a table lookup.
 const ACCENTED: &str = "\
 Le café où Émile prenait son thé à cinq heures était déjà fermé quand nous \
 sommes arrivés, et la pluie n'avait pas cessé depuis le matin. « Tant pis », \
@@ -206,10 +206,10 @@ fn layouts(c: &mut Criterion) {
 /// What the report costs: `NoReport`, which is what `encode` uses, against
 /// `EncodeReport`.
 ///
-/// On the accented corpus every entry needs nothing in the preamble, so this
-/// is the cost of carrying the reporter at all; the Cyrillic corpus, whose
-/// entries all name a `fontenc` profile, is the one that actually records
-/// something.
+/// On the accented corpus only the guillemets need anything in the preamble,
+/// so this is very nearly the cost of carrying the reporter at all; the
+/// Cyrillic corpus, whose letters all name a `fontenc` profile, is the one
+/// that actually records something.
 fn reporting(c: &mut Criterion) {
     let encoder = Encoder::new(&DEFAULTS);
     for (corpus, text) in [("accented", ACCENTED), ("cyrillic", CYRILLIC)] {

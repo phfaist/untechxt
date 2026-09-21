@@ -22,6 +22,11 @@ broken_intra_doc_links = "deny"
 private_intra_doc_links = "warn"
 bare_urls = "warn"
 
+[lib]
+# The library has no benchmarks of its own, and `cargo bench` would otherwise
+# run its libtest harness first, which rejects criterion's options.
+bench = false
+
 [profile.release]
 lto = true
 codegen-units = 1

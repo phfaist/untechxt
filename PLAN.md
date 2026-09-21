@@ -322,7 +322,13 @@ a runtime `Chunk::docs` string (source comments instead).
   `io::Write` adapter. `cargo build --no-default-features` is the `no_std`
   check.
 - `core::error::Error` is used throughout (stable since Rust 1.81).
-- `criterion` is added as a dev-dependency at step 6.
+- `criterion` is added as a dev-dependency at step 6, together with
+  `[[bench]] name = "encode", harness = false` and `[lib] bench = false` (so
+  that `cargo bench` hands its options to criterion rather than to the
+  library's own empty libtest harness), and an `exclude` that keeps the
+  reference-only material out of the published package: `/initial-rust-port`,
+  `/tools`, `/PLAN.md`, `/CLAUDE.md`. `tests/` with its golden, `benches/`,
+  `examples/`, `README.md` and both license files stay in the package.
 - `missing_docs = "deny"` also fires on public named struct fields and enum
   variants (not on tuple-struct fields): `Chunk`, `ModeWrapper`,
   `StandardProtection`, `TableEntry`, `EncodeReport` need per-field docs.
@@ -368,6 +374,17 @@ src/
     needs_profiles.rs        builtin chunks and profiles
     default_table.rs         the entries: hand-maintained source of truth,
                              with provenance notes and both MIT notices
+tests/
+  core.rs                    the core API: the rules, the chain, the
+                             protection strategies, the encoder loop and what
+                             it reports (step 1)
+  statictable.rs             the three static layouts over one small table,
+                             and `compile_static_table!` (step 2)
+  builtin.rs                 the builtin tables, chunks and profiles (step 3)
+  latexencode.rs             the ported pylatexenc suite and the golden
+                             test (step 4)
+  goldens/latexencode/       the conformance golden
+                             `uni_chars_test_previous.txt`, and its `README.md`
 tools/
   migrate_tables.py          one-off data migration script (step 3)
 benches/
@@ -399,9 +416,9 @@ pub trait Rule: Debug {
 pub struct RuleInput<'s> { /* full: &'s str, pos: usize, ch: char */ }
 impl<'s> RuleInput<'s> {
     pub fn new(full: &'s str, pos: usize) -> Option<Self>;  // for testing rules
-    pub fn ch(&self) -> char;          // the char at pos, already decoded
-    pub fn pos(&self) -> usize;
-    pub fn full(&self) -> &'s str;
+    pub const fn ch(&self) -> char;    // the char at pos, already decoded
+    pub const fn pos(&self) -> usize;
+    pub const fn full(&self) -> &'s str;
     pub fn rest(&self) -> &'s str;     // &full[pos..], for lookahead
     pub fn before(&self) -> &'s str;   // &full[..pos], for lookbehind
 
@@ -426,10 +443,10 @@ pub struct InvalidPrefixLength {
 pub struct EncodedReplacement<'a> { /* consumed, encoded, hint, needs */ }
 impl<'a> EncodedReplacement<'a> {
     pub fn with_needs(self, profile: &'a Profile) -> Self;
-    pub fn consumed(&self) -> usize;
+    pub const fn consumed(&self) -> usize;
     pub fn encoded(&self) -> &str;
-    pub fn hint(&self) -> ReplacementProtectionHint;
-    pub fn needs(&self) -> Option<&'a Profile>;
+    pub const fn hint(&self) -> ReplacementProtectionHint;
+    pub const fn needs(&self) -> Option<&'a Profile>;
 }
 
 // A closure rule may return owned strings, literals, `&'static Profile`, or
@@ -1010,7 +1027,7 @@ hand-maintained source of truth.
   Two side measurements from the same bench file. `EncodeReport` costs
   nothing measurable against `NoReport` — 2.40 µs against 2.66 µs on the
   accented corpus, 13.39 µs against 13.67 µs on the Cyrillic one, where every
-  entry names a `fontenc` profile — because the encoder skips immediate
+  letter names a `fontenc` profile — because the encoder skips immediate
   repeats of a profile. `NormalizeNfc` over text that already is NFC costs
   half again the encoding itself: 2.46 µs against 1.62 µs with
   `NoNormalization` on the accented corpus, for the quick check alone.

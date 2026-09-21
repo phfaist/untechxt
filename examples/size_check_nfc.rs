@@ -8,7 +8,7 @@
 use untechxt::{Encoder, DEFAULTS};
 
 fn main() {
-    let text = std::env::args().nth(1).unwrap_or_else(|| "Caf\u{65}\u{301} \u{3b1} \u{2264} \u{3b2}".into());
+    let text = std::env::args().nth(1).unwrap_or_else(|| "Caf\u{e9} \u{3b1} \u{2264} \u{3b2}".into());
     // `encode` reports into `NoReport`, so the needs logic has nothing to do.
     let encoded = Encoder::new(&DEFAULTS).encode(&text).unwrap();
     println!("{encoded}");
