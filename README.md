@@ -20,6 +20,9 @@ of them.  This library
 is also highly extensible so you can define your own encoding rules and behavior
 hooks, e.g., for unknown characters.
 
+**Experimental status:** This library is still under experimental development
+status.  Its API may still change!
+
 
 ## Quick start
 
