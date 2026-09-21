@@ -850,7 +850,12 @@ hand-maintained source of truth.
 - Port `initial-rust-port/tests/latexencode.rs` (39 tests) and the 9 unit
   tests at the end of `initial-rust-port/src/lib.rs` to the new API. Every
   old test has a disposition here; tests not named are ported as they are,
-  with expected strings updated only for the `\UnxT` rename.
+  with expected strings updated only for the `\UnxT` rename and for the
+  `\ensuremath{..}` that moved from the spelling into the mode column (a
+  user rule that overrides a math entry now writes `\ensuremath{..}` itself).
+  The ported suite lives in `tests/latexencode.rs`; a few table-structure
+  tests overlap with `tests/builtin.rs` (written in step 3), which is
+  intended: the old names stay visible next to the old suite.
   - `basic_1_non_ascii_only_braces_all`,
     `basic_2c_ascii_specials_untouched_with_non_ascii_only`: use the
     `NON_ASCII` table instead of a `non_ascii_only` flag; `braces-all`
@@ -916,7 +921,8 @@ hand-maintained source of truth.
   between `NoReport` and `EncodeReport`; `Send + Sync` assertions for a
   static-chain encoder and for `DynRuleChain`; a `LocalDynRuleChain` holding
   an `Rc`; a run-time `Profile` from a user rule ending up in the report;
-  streaming through `FmtOut`.
+  streaming through `FmtOut`. (The `Send + Sync`, `Rc`, and `FmtOut` tests
+  were delivered with step 1 in `tests/core.rs`; the rest in step 4.)
 - Benchmarks (criterion, dev-only): ASCII-heavy text, accented Latin,
   Greek/math, Cyrillic, CJK under `Keep`; one run per table layout. Spot
   checks with `cargo asm` / `cargo bloat`: the needs logic is gone under
