@@ -10,9 +10,9 @@ description = "Encode Unicode text as LaTeX source, and learn what the document 
 readme = "README.md"
 keywords = ["latex", "unicode", "encoding", "text-processing", "no-std"]
 categories = ["text-processing", "encoding", "no-std"]
-# Reference-only material and the one-off migration script stay out of the
-# published package.
-exclude = ["/initial-rust-port", "/tools", "/PLAN.md", "/CLAUDE.md"]
+# Reference-only material, the one-off migration script, and the CI setup stay
+# out of the published package.
+exclude = ["/initial-rust-port", "/tools", "/PLAN.md", "/CLAUDE.md", "/.github"]
 
 [lints.rust]
 missing_docs = "deny"

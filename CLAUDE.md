@@ -14,3 +14,4 @@ tables, tests, and golden file are the parts worth carrying over).
 - **Agents:** run all subagents (exploration, research, ...) with the Opus
   model.
 
+- Never run `cargo fmt`.
