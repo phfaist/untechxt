@@ -1,5 +1,5 @@
 //! The static table layouts (step 2): one small table compiled in each of the
-//! three layouts, checked the same way in all three.
+//! layouts, checked the same way in all of them.
 
 use untechxt::lookuptable::LookupTable;
 use untechxt::preamble::{Chunk, Profile};
@@ -9,8 +9,8 @@ use untechxt::protection::{
 use untechxt::report::EncodeReport;
 use untechxt::rule::{AsciiSet, Rule};
 use untechxt::statictable::{
-    compile_static_table, ProfileIndex, StaticTableBinarySearch, StaticTableTwoLevelDirect,
-    StaticTableTwoLevelLinear,
+    compile_static_table, ProfileIndex, StaticTableBinarySearch, StaticTableTwoLevelBitmap,
+    StaticTableTwoLevelDirect, StaticTableTwoLevelLinear,
 };
 use untechxt::Encoder;
 
@@ -171,9 +171,10 @@ macro_rules! layout_tests {
 
 layout_tests!(binary_search, StaticTableBinarySearch, binary_search);
 layout_tests!(two_level_linear, StaticTableTwoLevelLinear, two_level_linear);
+layout_tests!(two_level_bitmap, StaticTableTwoLevelBitmap, two_level_bitmap);
 layout_tests!(two_level_direct, StaticTableTwoLevelDirect, two_level_direct_index);
 
-// -------------------------------------------------- across the three layouts
+// -------------------------------------------------------- across the layouts
 
 /// An empty table is legal, answers nothing, and triggers on no ASCII
 /// character at all.
@@ -190,27 +191,118 @@ fn an_empty_table_answers_nothing() {
     assert_eq!(EMPTY.iter().count(), 0);
 }
 
-/// The three layouts are three ways of holding one table: every lookup and
+/// The layouts are different ways of holding one table: every lookup and
 /// every iteration must agree.
 #[test]
-fn the_three_layouts_answer_alike() {
+fn the_layouts_answer_alike() {
     static BINARY: StaticTableBinarySearch =
         compile_static_table!(ENTRIES, &PROFILES, binary_search);
     static LINEAR: StaticTableTwoLevelLinear =
         compile_static_table!(ENTRIES, &PROFILES, two_level_linear);
+    static BITMAP: StaticTableTwoLevelBitmap =
+        compile_static_table!(ENTRIES, &PROFILES, two_level_bitmap);
     static DIRECT: StaticTableTwoLevelDirect =
         compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index);
 
     let binary: Vec<_> = BINARY.iter().collect();
     let linear: Vec<_> = LINEAR.iter().collect();
+    let bitmap: Vec<_> = BITMAP.iter().collect();
     let direct: Vec<_> = DIRECT.iter().collect();
     assert_eq!(binary, linear);
+    assert_eq!(binary, bitmap);
     assert_eq!(binary, direct);
 
     for ch in ENTRIES.iter().map(|&(ch, ..)| ch).chain(MISSES.iter().copied()) {
         assert_eq!(BINARY.lookup(ch), LINEAR.lookup(ch));
+        assert_eq!(BINARY.lookup(ch), BITMAP.lookup(ch));
         assert_eq!(BINARY.lookup(ch), DIRECT.lookup(ch));
     }
+}
+
+/// The number of entries of [`DENSE`]: a full block and eight more.
+const DENSE_LEN: usize = 256 + 8;
+
+/// A table with a full block followed by a sparse one, which `ENTRIES` has
+/// neither of. Block `0x04` has an entry at every low byte. Block `0x05` has
+/// one at the first and at the last bit of each of the four words of a
+/// 256-bit bitmap, so that a position counted wrongly across a word boundary
+/// names the wrong entry.
+///
+/// The entries of the full block are generated, so they all have the same
+/// value; their mode and their profile cycle with the periods 3 and 4, which
+/// tells an entry from every neighbor closer than 12 positions. The entries
+/// of the second block have a value each.
+const DENSE: [(char, &str, ValueMode, ProfileIndex); DENSE_LEN] = {
+    let mut out = [('\0', "x", TEXT, NONE); DENSE_LEN];
+    let mut i = 0;
+    while i < 256 {
+        out[i].0 = match char::from_u32(0x0400 + i as u32) {
+            Some(ch) => ch,
+            None => panic!("every code point of the block is a character"),
+        };
+        out[i].2 = match i % 3 {
+            0 => TEXT,
+            1 => MATH,
+            _ => ANY,
+        };
+        out[i].3 = ProfileIndex((i % 4) as u8);
+        i += 1;
+    }
+    out[256] = ('\u{0500}', "w0-first", TEXT, NONE);
+    out[257] = ('\u{053F}', "w0-last", TEXT, NONE);
+    out[258] = ('\u{0540}', "w1-first", TEXT, NONE);
+    out[259] = ('\u{057F}', "w1-last", TEXT, NONE);
+    out[260] = ('\u{0580}', "w2-first", TEXT, NONE);
+    out[261] = ('\u{05BF}', "w2-last", TEXT, NONE);
+    out[262] = ('\u{05C0}', "w3-first", TEXT, NONE);
+    out[263] = ('\u{05FF}', "w3-last", TEXT, NONE);
+    out
+};
+
+/// Full blocks and entries on either side of a bitmap word boundary: every
+/// layout finds each entry of [`DENSE`] under its own character, and nothing
+/// at the characters between the entries of the sparse block.
+#[test]
+fn a_full_block_and_the_word_boundaries_of_a_bitmap() {
+    static BINARY: StaticTableBinarySearch =
+        compile_static_table!(&DENSE, &PROFILES, binary_search);
+    static LINEAR: StaticTableTwoLevelLinear =
+        compile_static_table!(&DENSE, &PROFILES, two_level_linear);
+    static BITMAP: StaticTableTwoLevelBitmap =
+        compile_static_table!(&DENSE, &PROFILES, two_level_bitmap);
+    static DIRECT: StaticTableTwoLevelDirect =
+        compile_static_table!(&DENSE, &PROFILES, two_level_direct_index);
+
+    let tables: [(&str, &dyn LookupTable); 4] = [
+        ("binary_search", &BINARY),
+        ("two_level_linear", &LINEAR),
+        ("two_level_bitmap", &BITMAP),
+        ("two_level_direct_index", &DIRECT),
+    ];
+    for (name, table) in tables {
+        for &(ch, encoded, mode, profile) in &DENSE {
+            let entry = table.lookup(ch).unwrap_or_else(|| panic!("{name}: {ch:?} is missing"));
+            assert_eq!(entry.encoded, encoded, "{name}: {ch:?}");
+            assert_eq!(entry.hint, expected_hint(encoded, mode), "{name}: {ch:?}");
+            match profile {
+                ProfileIndex(0) => assert!(entry.needs.is_none(), "{name}: {ch:?}"),
+                ProfileIndex(index) => {
+                    let needs = entry.needs.expect("the entry names a profile");
+                    assert!(std::ptr::eq(needs, &PROFILES[index as usize]), "{name}: {ch:?}");
+                }
+            }
+        }
+        for miss in ['\u{0501}', '\u{053E}', '\u{0541}', '\u{05BE}', '\u{05FE}', '\u{0600}'] {
+            assert_eq!(table.lookup(miss), None, "{name}: {miss:?} must not be in the table");
+        }
+    }
+
+    let expected: Vec<char> = DENSE.iter().map(|&(ch, ..)| ch).collect();
+    assert_eq!(BINARY.iter().map(|(ch, _)| ch).collect::<Vec<_>>(), expected);
+    assert_eq!(LINEAR.iter().map(|(ch, _)| ch).collect::<Vec<_>>(), expected);
+    assert_eq!(BITMAP.iter().map(|(ch, _)| ch).collect::<Vec<_>>(), expected);
+    assert_eq!(DIRECT.iter().map(|(ch, _)| ch).collect::<Vec<_>>(), expected);
+    assert!(BITMAP.iter().eq(BINARY.iter()));
 }
 
 /// A report gathered from a static table is the same whichever layout held

@@ -47,7 +47,7 @@ use crate::lookuptable::{apply_lookup, LookupTable, TableEntry};
 use crate::preamble::Profile;
 use crate::rule::{AsciiSet, Rule, RuleInput, RuleResult};
 use crate::statictable::__build::Entries;
-use crate::statictable::{compile_static_table, StaticTableTwoLevelDirect};
+use crate::statictable::{compile_static_table, StaticTableTwoLevelBitmap};
 
 use self::default_table::ENTRIES;
 use self::needs_profiles::PROFILES;
@@ -76,7 +76,7 @@ use self::needs_profiles::PROFILES;
 pub struct BuiltinTable {
     /// The compiled entries. Which static layout contains them is not part of
     /// the API.
-    layout: StaticTableTwoLevelDirect,
+    layout: StaticTableTwoLevelBitmap,
     /// Whether the table ignores the ASCII entries of `layout`. This is how
     /// [`DEFAULT_TABLE_NON_ASCII`] shares the data of [`DEFAULT_TABLE`].
     skip_ascii: bool,
@@ -162,7 +162,7 @@ impl fmt::Debug for BuiltinTable {
 /// assert_eq!(DEFAULT_TABLE.lookup('&').unwrap().encoded, r"\&");
 /// ```
 pub static DEFAULT_TABLE: BuiltinTable = BuiltinTable {
-    layout: compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index),
+    layout: compile_static_table!(ENTRIES, &PROFILES, two_level_bitmap),
     skip_ascii: false,
 };
 
@@ -207,7 +207,7 @@ pub static DEFAULT_TABLE_NON_ASCII: BuiltinTable =
 /// assert_eq!(DEFAULT_TABLE_ASCII_SPECIALS.lookup('\u{e9}'), None);
 /// ```
 pub static DEFAULT_TABLE_ASCII_SPECIALS: BuiltinTable = BuiltinTable {
-    layout: compile_static_table!(ascii_head(ENTRIES), &ASCII_PROFILES, two_level_direct_index),
+    layout: compile_static_table!(ascii_head(ENTRIES), &ASCII_PROFILES, two_level_bitmap),
     skip_ascii: false,
 };
 

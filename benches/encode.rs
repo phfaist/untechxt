@@ -1,4 +1,4 @@
-//! Benchmarks for the encoder and for the three static table layouts.
+//! Benchmarks for the encoder and for the static table layouts.
 //!
 //! Five corpora stand for the kinds of text the encoder sees: ASCII-heavy
 //! source with a few LaTeX specials, accented Latin prose, Greek with
@@ -6,14 +6,15 @@
 //! not cover at all and which therefore runs the unknown-character path under
 //! [`UnknownCharPolicy::Keep`].
 //!
-//! Each corpus is encoded with the same 1549 builtin entries compiled in each
-//! of the three static layouts — `binary_search`, `two_level_linear` and
-//! `two_level_direct_index` — and with `DEFAULT_TABLE` itself, which adds the
-//! `BuiltinTable` newtype around whichever layout the crate ships. Every run
-//! is text mode with `NoReport`, the encoder's defaults. Three more groups
-//! measure what the report costs (on the accented corpus, whose entries need
-//! next to nothing in the preamble, and on the Cyrillic one, whose letters all
-//! name a profile) and what the input normalizer costs.
+//! Each corpus is encoded with the same builtin entries compiled in each of
+//! the static layouts — `binary_search`, `two_level_linear`,
+//! `two_level_bitmap` and `two_level_direct_index` — and with `DEFAULT_TABLE`
+//! itself, which adds the `BuiltinTable` newtype around whichever layout the
+//! crate ships. Every run is text mode with `NoReport`, the encoder's
+//! defaults. Three more groups measure what the report costs (on the accented
+//! corpus, whose entries need next to nothing in the preamble, and on the
+//! Cyrillic one, whose letters all name a profile) and what the input
+//! normalizer costs.
 //!
 //! The encoder is built once per benchmark and reused, which is how an
 //! encoder is meant to be used; the timed part is one `encode` call, output
@@ -42,8 +43,8 @@ use untechxt::builtin::DEFAULT_TABLE;
 use untechxt::normalizer::NoNormalization;
 use untechxt::rule::Rule;
 use untechxt::statictable::{
-    compile_static_table, StaticTableBinarySearch, StaticTableTwoLevelDirect,
-    StaticTableTwoLevelLinear,
+    compile_static_table, StaticTableBinarySearch, StaticTableTwoLevelBitmap,
+    StaticTableTwoLevelDirect, StaticTableTwoLevelLinear,
 };
 use untechxt::{Encoder, UnknownCharPolicy};
 
@@ -55,6 +56,9 @@ static BINARY_SEARCH: StaticTableBinarySearch =
 
 static TWO_LEVEL_LINEAR: StaticTableTwoLevelLinear =
     compile_static_table!(ENTRIES, &PROFILES, two_level_linear);
+
+static TWO_LEVEL_BITMAP: StaticTableTwoLevelBitmap =
+    compile_static_table!(ENTRIES, &PROFILES, two_level_bitmap);
 
 static TWO_LEVEL_DIRECT: StaticTableTwoLevelDirect =
     compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index);
@@ -178,8 +182,8 @@ const CORPORA: [(&str, &str); 5] = [
 /// One encoder over `rule`, built once, then one timed `encode` per
 /// iteration.
 ///
-/// The rule is taken by reference, as all four of the tables here are used:
-/// a table is a static, and `&R` forwards `Rule`.
+/// The rule is taken by reference, as all of the tables here are used: a
+/// table is a static, and `&R` forwards `Rule`.
 fn bench_rule<R: Rule>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     name: &str,
@@ -201,6 +205,7 @@ fn layouts(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(text.len() as u64));
         bench_rule(&mut group, "binary_search", &BINARY_SEARCH, text);
         bench_rule(&mut group, "two_level_linear", &TWO_LEVEL_LINEAR, text);
+        bench_rule(&mut group, "two_level_bitmap", &TWO_LEVEL_BITMAP, text);
         bench_rule(&mut group, "two_level_direct_index", &TWO_LEVEL_DIRECT, text);
         bench_rule(&mut group, "defaults", &DEFAULT_TABLE, text);
         group.finish();

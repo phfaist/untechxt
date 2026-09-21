@@ -1,14 +1,14 @@
 //! Static lookup tables: a table of entries known at compile time, compiled
-//! by [`compile_static_table!`] into one of three layouts, with nothing left
+//! by [`compile_static_table!`] into one of several layouts, with nothing left
 //! to do at run time and nothing to allocate.
 //!
 //! A table is written as a plain `const` slice of tuples — the character, its
 //! LaTeX, the [`ValueMode`] that LaTeX is valid in, and the
 //! [`ProfileIndex`] of what it needs in the preamble — beside an array of the
 //! [`Profile`]s those indices name. The macro turns the two into one of
-//! [`StaticTableBinarySearch`], [`StaticTableTwoLevelLinear`] or
-//! [`StaticTableTwoLevelDirect`], each of which is a [`LookupTable`] and a
-//! [`Rule`] in its own right:
+//! [`StaticTableBinarySearch`], [`StaticTableTwoLevelLinear`],
+//! [`StaticTableTwoLevelBitmap`] or [`StaticTableTwoLevelDirect`], each of
+//! which is a [`LookupTable`] and a [`Rule`] in its own right:
 //!
 //! ```
 //! use untechxt::lookuptable::LookupTable;
@@ -40,9 +40,9 @@
 //! assert_eq!(Encoder::new(&TABLE).encode("Caf\u{e9}").unwrap(), r"Caf\'e");
 //! ```
 //!
-//! # The three layouts
+//! # The layouts
 //!
-//! All three answer the same lookups; they differ in how they find the entry
+//! All layouts answer the same lookups; they differ in how they find the entry
 //! and in how much data they carry. Pick one by measuring, and keep the
 //! choice private to your crate — it is an implementation detail, as
 //! `BuiltinTable` keeps it for the builtin data.
@@ -53,8 +53,14 @@
 //! - [`StaticTableTwoLevelLinear`]: one block per distinct `code point >> 8`,
 //!   found by a linear scan over the blocks, then a linear scan over the low
 //!   bytes inside the block. One byte per entry beyond the payload, and six
-//!   per block — the most compact of the three unless the entries are spread
-//!   thinly over very many blocks.
+//!   per block. It is the most compact layout for a table whose blocks
+//!   contain between 2 and 32 entries on average.
+//! - [`StaticTableTwoLevelBitmap`]: the same blocks, each with a 256-bit
+//!   bitmap of the low bytes that have an entry. A lookup inside a block tests
+//!   one bit and counts the set bits before it, which takes the same time
+//!   however many entries the block contains. The layout takes 38 bytes per
+//!   block and nothing per entry beyond the payload. It is the most compact
+//!   layout for a table whose blocks contain more than 32 entries on average.
 //! - [`StaticTableTwoLevelDirect`]: the same blocks, each with a 256-slot
 //!   index from the low byte straight to the entry. 512 bytes per block, and
 //!   a lookup inside a block is one load.
@@ -149,6 +155,34 @@ pub struct StaticTableTwoLevelLinear {
 }
 
 /// A static table of one block per distinct `code point >> 8`, each with a
+/// 256-bit bitmap of the low bytes that have an entry.
+///
+/// Build one with [`compile_static_table!`] and the layout name
+/// `two_level_bitmap`. A lookup scans the blocks for the character's high
+/// bits and then tests the bit of the character's low byte in the bitmap of
+/// the block. If the bit is set, the number of set bits before it is the
+/// position of the entry inside the block. A lookup inside a block therefore
+/// takes the same time however many entries the block contains. The layout
+/// takes 38 bytes per block and nothing per entry beyond the payloads.
+#[derive(Clone, Copy)]
+pub struct StaticTableTwoLevelBitmap {
+    /// The distinct `code point >> 8` of the entries, strictly ascending.
+    blocks: &'static [u32],
+    /// Where each block starts in `values`, with the number of entries at
+    /// the end.
+    starts: &'static [u16],
+    /// One 256-bit bitmap per block, as four words: bit `low & 63` of word
+    /// `low >> 6` is set when the block has an entry for the low byte `low`.
+    bitmaps: &'static [[u64; 4]],
+    /// The payloads, in ascending order of their character.
+    values: &'static [StaticEntry],
+    /// The profiles an entry's index names.
+    profiles: &'static [Profile],
+    /// The ASCII characters the table has entries for.
+    ascii_keys: AsciiSet,
+}
+
+/// A static table of one block per distinct `code point >> 8`, each with a
 /// direct 256-slot index.
 ///
 /// Build one with [`compile_static_table!`] and the layout name
@@ -218,6 +252,36 @@ impl StaticTableTwoLevelLinear {
     }
 }
 
+impl StaticTableTwoLevelBitmap {
+    /// The number of entries in the table.
+    pub const fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Whether the table has no entry at all.
+    pub const fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// The entries of the table, in ascending order of their character.
+    pub fn iter(&self) -> impl Iterator<Item = (char, TableEntry<'_>)> + '_ {
+        let (starts, values, profiles) = (self.starts, self.values, self.profiles);
+        self.blocks.iter().zip(self.bitmaps.iter()).enumerate().flat_map(
+            move |(block, (&high, bitmap))| {
+                let start = block_bound(starts, block);
+                // The entries of a block are in the order of their low bytes,
+                // so the n-th set bit is the n-th entry.
+                (0..=u8::MAX).filter(move |&low| has_low(bitmap, low)).enumerate().filter_map(
+                    move |(rank, low)| {
+                        let ch = char::from_u32((high << 8) | low as u32)?;
+                        Some((ch, values.get(start + rank)?.view(profiles)))
+                    },
+                )
+            },
+        )
+    }
+}
+
 impl StaticTableTwoLevelDirect {
     /// The number of entries in the table.
     pub const fn len(&self) -> usize {
@@ -252,6 +316,21 @@ fn block_bound(starts: &[u16], block: usize) -> usize {
     }
 }
 
+/// Whether `bitmap` has the bit of the low byte `low` set.
+fn has_low(bitmap: &[u64; 4], low: u8) -> bool {
+    bitmap[(low >> 6) as usize] & (1 << (low & 63)) != 0
+}
+
+/// The number of bits of `bitmap` that are set below the bit of the low byte
+/// `low`. When the bit of `low` is set, this is the position of its entry
+/// inside the block.
+fn rank_of_low(bitmap: &[u64; 4], low: u8) -> usize {
+    let word = (low >> 6) as usize;
+    let below = bitmap[word] & ((1 << (low & 63)) - 1);
+    let earlier: u32 = bitmap.iter().take(word).map(|held| held.count_ones()).sum();
+    (earlier + below.count_ones()) as usize
+}
+
 impl LookupTable for StaticTableBinarySearch {
     fn lookup(&self, ch: char) -> Option<TableEntry<'_>> {
         let index = self.keys.binary_search(&ch).ok()?;
@@ -272,6 +351,24 @@ impl LookupTable for StaticTableTwoLevelLinear {
         let low = code_point as u8;
         let offset = self.lows.get(start..end)?.iter().position(|&held| held == low)?;
         Some(self.values.get(start + offset)?.view(self.profiles))
+    }
+
+    fn ascii_keys(&self) -> AsciiSet {
+        self.ascii_keys
+    }
+}
+
+impl LookupTable for StaticTableTwoLevelBitmap {
+    fn lookup(&self, ch: char) -> Option<TableEntry<'_>> {
+        let code_point = ch as u32;
+        let block = self.blocks.iter().position(|&high| high == code_point >> 8)?;
+        let bitmap = self.bitmaps.get(block)?;
+        let low = code_point as u8;
+        if !has_low(bitmap, low) {
+            return None;
+        }
+        let position = block_bound(self.starts, block) + rank_of_low(bitmap, low);
+        Some(self.values.get(position)?.view(self.profiles))
     }
 
     fn ascii_keys(&self) -> AsciiSet {
@@ -315,6 +412,16 @@ impl Rule for StaticTableTwoLevelLinear {
     }
 }
 
+impl Rule for StaticTableTwoLevelBitmap {
+    fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a> {
+        apply_lookup(self, input)
+    }
+
+    fn ascii_triggers(&self) -> AsciiSet {
+        self.ascii_keys
+    }
+}
+
 impl Rule for StaticTableTwoLevelDirect {
     fn apply<'a>(&'a self, input: RuleInput<'a>) -> RuleResult<'a> {
         apply_lookup(self, input)
@@ -343,6 +450,16 @@ impl fmt::Debug for StaticTableTwoLevelLinear {
     }
 }
 
+impl fmt::Debug for StaticTableTwoLevelBitmap {
+    /// The layout, the number of entries and the number of blocks.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaticTableTwoLevelBitmap")
+            .field("len", &self.len())
+            .field("blocks", &self.blocks.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl fmt::Debug for StaticTableTwoLevelDirect {
     /// The layout, the number of entries and the number of blocks.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -354,7 +471,7 @@ impl fmt::Debug for StaticTableTwoLevelDirect {
 }
 
 /// The constant evaluation behind [`compile_static_table!`]: the checks, the
-/// arrays each layout is made of, and the constructors of the three layout
+/// arrays each layout is made of, and the constructors of the layout
 /// structs.
 ///
 /// Every function here runs at compile time, where a failed `assert!` is a
@@ -365,8 +482,8 @@ impl fmt::Debug for StaticTableTwoLevelDirect {
 pub mod __build {
     use super::{
         AsciiSet, Profile, ProfileIndex, ReplacementProtectionHint, StaticTableBinarySearch,
-        StaticTableTwoLevelDirect, StaticTableTwoLevelLinear, TableEntry, ValueMode,
-        ValueTermination, NO_ENTRY,
+        StaticTableTwoLevelBitmap, StaticTableTwoLevelDirect, StaticTableTwoLevelLinear,
+        TableEntry, ValueMode, ValueTermination, NO_ENTRY,
     };
 
     /// The flag bit of [`StaticEntry::flags`] that marks a value ending with a
@@ -627,6 +744,24 @@ pub mod __build {
         out
     }
 
+    /// One 256-bit bitmap per block, as four words: bit `low & 63` of word
+    /// `low >> 6` is set when the block has an entry whose character has the
+    /// low byte `low`. `K` is [`count_blocks`].
+    pub const fn bitmaps<const K: usize>(entries: Entries) -> [[u64; 4]; K] {
+        let mut out = [[0u64; 4]; K];
+        let mut block = 0;
+        let mut i = 0;
+        while i < entries.len() {
+            if i > 0 && high(entries[i].0) != high(entries[i - 1].0) {
+                block += 1;
+            }
+            let low = entries[i].0 as u32 & 0xFF;
+            out[block][(low >> 6) as usize] |= 1 << (low & 63);
+            i += 1;
+        }
+        out
+    }
+
     /// One 256-slot index per block, from the low byte of a character to the
     /// position of its entry, or `u16::MAX` where the block has no entry for
     /// that byte. `K` is [`count_blocks`].
@@ -666,6 +801,18 @@ pub mod __build {
         StaticTableTwoLevelLinear { blocks, starts, lows, values, profiles, ascii_keys }
     }
 
+    /// The `two_level_bitmap` layout over the arrays the macro declared.
+    pub const fn new_two_level_bitmap(
+        blocks: &'static [u32],
+        starts: &'static [u16],
+        bitmaps: &'static [[u64; 4]],
+        values: &'static [StaticEntry],
+        profiles: &'static [Profile],
+        ascii_keys: AsciiSet,
+    ) -> StaticTableTwoLevelBitmap {
+        StaticTableTwoLevelBitmap { blocks, starts, bitmaps, values, profiles, ascii_keys }
+    }
+
     /// The `two_level_direct_index` layout over the arrays the macro
     /// declared.
     pub const fn new_two_level_direct(
@@ -695,10 +842,11 @@ pub mod __build {
 ///   Position 0 is never consulted — index 0 means "needs nothing" — but it
 ///   must exist, so that an index is a position of the array. Write
 ///   `&PROFILES` for a `static PROFILES: [Profile; N]`.
-/// - `LAYOUT` is one of the three bare words `binary_search`,
-///   `two_level_linear` and `two_level_direct_index`, and it decides which of
-///   [`StaticTableBinarySearch`], [`StaticTableTwoLevelLinear`] and
-///   [`StaticTableTwoLevelDirect`] the macro evaluates to.
+/// - `LAYOUT` is one of the bare words `binary_search`, `two_level_linear`,
+///   `two_level_bitmap` and `two_level_direct_index`, and it decides which of
+///   [`StaticTableBinarySearch`], [`StaticTableTwoLevelLinear`],
+///   [`StaticTableTwoLevelBitmap`] and [`StaticTableTwoLevelDirect`] the macro
+///   evaluates to.
 ///
 /// The macro declares the `static` arrays the layout is made of and evaluates
 /// to the layout struct itself, so that it can initialize a `static` of your
@@ -759,6 +907,31 @@ macro_rules! __compile_static_table {
             &__UNTECHXT_BLOCKS,
             &__UNTECHXT_STARTS,
             &__UNTECHXT_LOWS,
+            &__UNTECHXT_VALUES,
+            $profiles,
+            $crate::statictable::__build::ascii_keys(__UNTECHXT_ENTRIES),
+        )
+    }};
+    ($entries:expr, $profiles:expr, two_level_bitmap) => {{
+        const __UNTECHXT_ENTRIES: $crate::statictable::__build::Entries = $entries;
+        const __UNTECHXT_N: usize = __UNTECHXT_ENTRIES.len();
+        const __UNTECHXT_K: usize =
+            $crate::statictable::__build::count_blocks(__UNTECHXT_ENTRIES);
+        const __UNTECHXT_PROFILE_COUNT: usize = $profiles.len();
+        const _: () =
+            $crate::statictable::__build::check(__UNTECHXT_ENTRIES, __UNTECHXT_PROFILE_COUNT);
+        static __UNTECHXT_BLOCKS: [u32; __UNTECHXT_K] =
+            $crate::statictable::__build::blocks::<__UNTECHXT_K>(__UNTECHXT_ENTRIES);
+        static __UNTECHXT_STARTS: [u16; __UNTECHXT_K + 1] =
+            $crate::statictable::__build::starts::<{ __UNTECHXT_K + 1 }>(__UNTECHXT_ENTRIES);
+        static __UNTECHXT_BITMAPS: [[u64; 4]; __UNTECHXT_K] =
+            $crate::statictable::__build::bitmaps::<__UNTECHXT_K>(__UNTECHXT_ENTRIES);
+        static __UNTECHXT_VALUES: [$crate::statictable::__build::StaticEntry; __UNTECHXT_N] =
+            $crate::statictable::__build::values::<__UNTECHXT_N>(__UNTECHXT_ENTRIES);
+        $crate::statictable::__build::new_two_level_bitmap(
+            &__UNTECHXT_BLOCKS,
+            &__UNTECHXT_STARTS,
+            &__UNTECHXT_BITMAPS,
             &__UNTECHXT_VALUES,
             $profiles,
             $crate::statictable::__build::ascii_keys(__UNTECHXT_ENTRIES),

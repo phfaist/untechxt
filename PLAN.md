@@ -307,7 +307,7 @@ math versus text mode, or of streaming output; this library adds all three.
   (private fields: one of the layout structs, and a flag that makes the
   table ignore its ASCII entries), so the table layout stays an
   implementation detail and can change without breaking the API, and a
-  program can choose a builtin table at run time. The three layout structs
+  program can choose a builtin table at run time. The layout structs
   themselves are public for users' own tables. There are no public
   ASCII-filtering views of a user's table (`OnlyAscii` / `ExceptAscii` were
   removed in the API namespace review).
@@ -417,7 +417,7 @@ tests/
   core.rs                    the core API: the rules, the chain, the
                              protection strategies, the encoder loop and what
                              it reports (step 1)
-  statictable.rs             the three static layouts over one small table,
+  statictable.rs             the static layouts over one small table,
                              and `compile_static_table!` (step 2)
   builtin.rs                 the builtin tables, chunks and profiles (step 3)
   latexencode.rs             the ported pylatexenc suite and the golden
@@ -428,7 +428,7 @@ tools/
   migrate_tables.py          one-off data migration script (step 3)
 benches/
   encode.rs                  criterion benchmarks: five corpora against the
-                             three table layouts, the report, the normalizer
+                             table layouts, the report, the normalizer
 examples/
   size_check.rs              the smallest program that uses the encoder, for
   size_check_nfc.rs          `cargo bloat` / `cargo asm`; the pair differs
@@ -845,22 +845,25 @@ impl DynTable {                   // owns its strings and its profiles
   `examples/size_check.rs`, release, LTO). Its profile array is a one-element
   array of its own rather than `&PROFILES`, which would link every `\UnxT`
   snippet: all 13 entries name profile 0, and the macro's index check makes
-  it a compile error if one ever names another. As compiled now the same
-  program is 375,088 bytes, and one that links both tables pays 1,264 bytes
-  for the second copy.
+  it a compile error if one ever names another. As compiled now, with the
+  `two_level_bitmap` layout, the same program is 375,232 bytes, and one that
+  links both tables pays 544 bytes for the second copy.
 - Keep the approach of `src/statictable.rs`: `const fn` builders turn a
-  sorted entry slice into one of three layouts, each its own public struct
+  sorted entry slice into one of four layouts, each its own public struct
   (`StaticTableBinarySearch`: binary search over a separate key array;
   `StaticTableTwoLevelLinear`: a block per distinct `code point >> 8`, with a
-  linear scan inside the block; `StaticTableTwoLevelDirect`: the same blocks
-  with a direct 256-slot index each), and a `macro_rules!` macro declares the
-  backing statics. The macro is rewritten to take three arguments: the
-  entries, the profiles as a `&'static [Profile]` expression (stored in the
-  table, so that `lookup` can turn an entry's index into a
+  linear scan inside the block; `StaticTableTwoLevelBitmap`: the same blocks
+  with a 256-bit bitmap each, where the number of set bits before a
+  character's bit is the position of its entry; `StaticTableTwoLevelDirect`:
+  the same blocks with a direct 256-slot index each), and a `macro_rules!`
+  macro declares the backing statics. The macro is rewritten to take three
+  arguments: the entries, the profiles as a `&'static [Profile]` expression
+  (stored in the table, so that `lookup` can turn an entry's index into a
   `&'static Profile`), and the layout, with the prototype's arm names
-  `binary_search`, `two_level_linear`, `two_level_direct_index`. Use
-  `two_level_direct_index` for the builtin table until the benchmark decides.
-  Each layout also carries the table's `ascii_keys` as a compiled `AsciiSet`,
+  `binary_search`, `two_level_linear`, `two_level_direct_index`, and
+  `two_level_bitmap`, which was added after step 6. The builtin tables use
+  `two_level_bitmap` (see the decision under "Open items"). Each layout also
+  carries the table's `ascii_keys` as a compiled `AsciiSet`,
   and offers `iter()`, `len()` and `is_empty()`. The compiled payload is the
   public `StaticEntry` of the `#[doc(hidden)]` module `statictable::__build`,
   which the macro has to name in the `static` items it declares.
@@ -873,7 +876,7 @@ impl DynTable {                   // owns its strings and its profiles
       ('\u{03B1}', r"\alpha", MATH, BUILTINS), // GREEK SMALL LETTER ALPHA
   ];
   pub static DEFAULT_TABLE: BuiltinTable = BuiltinTable {
-      layout: compile_static_table!(ENTRIES, &PROFILES, two_level_direct_index),
+      layout: compile_static_table!(ENTRIES, &PROFILES, two_level_bitmap),
       skip_ascii: false,
   };
   ```
@@ -883,7 +886,7 @@ impl DynTable {                   // owns its strings and its profiles
   item (the check that every index is in range) and passes the expression
   itself to the `static` items it declares.
   The builtin `ENTRIES` const is `#[doc(hidden)] pub`, so that the benchmarks
-  can compile the same data in all three layouts.
+  can compile the same data in every layout.
 - Compile-time checks (a violation is a compile error): strictly ascending
   keys, profile index in range, ASCII-only encoded strings, balanced braces
   (not counting `\{` and `\}`), no trailing lone backslash, entry count fits
@@ -1061,7 +1064,10 @@ hand-maintained source of truth.
   shrink in sub/superscripts; `\text` sizes correctly but needs amsmath;
   `\textnormal` is believed to behave like `\mbox` alone and like `\text`
   once amsmath is loaded (to be verified).
-- **Decided (step 6): the builtin table keeps `two_level_direct_index`.**
+- **Decided (step 6, revised): the builtin tables use `two_level_bitmap`.**
+  Step 6 compared the three layouts that existed then on speed alone and kept
+  `two_level_direct_index`; the revision below the step-6 numbers weighs its
+  size and replaces it.
   `benches/encode.rs` compiles the same 1549 entries in all three layouts and
   encodes five corpora with each — text mode, `NoReport`,
   `UnknownCharPolicy::Keep`. Numbers are the smallest of three criterion runs
@@ -1092,8 +1098,66 @@ hand-maintained source of truth.
   buy something there and nowhere else, so it is not implemented; it stays a
   possibility if a table with many more blocks is added.
 
+  **Revision: size, and the `two_level_bitmap` layout.** The direct index
+  pays 512 bytes per block whatever the block holds, and 7 of the 22 blocks
+  hold 10 entries or fewer. The index data of each layout, which is
+  everything beyond the payload that all layouts share, for the 1549 entries
+  in 22 blocks:
+
+  | layout                   | index data (bytes)                            |
+  |--------------------------|-----------------------------------------------|
+  | `binary_search`          | 6,196 (keys)                                  |
+  | `two_level_linear`       | 1,683 (88 blocks + 46 starts + 1,549 lows)    |
+  | `two_level_bitmap`       | 838 (88 blocks + 46 starts + 704 bitmaps)     |
+  | `two_level_direct_index` | 11,352 (88 blocks + 11,264 index)             |
+
+  `two_level_bitmap` keeps the blocks and gives each a 256-bit bitmap of the
+  low bytes that have an entry. A lookup tests one bit and counts the set
+  bits before it (up to four `count_ones`), which is the entry's position
+  inside the block: constant time inside a block, like the direct index, at
+  38 bytes per block. It is smaller than `two_level_linear` whenever the
+  blocks average more than 32 entries, and the builtin data averages 70.
+
+  Measured on a program that encodes its argument with one layout (release,
+  LTO, macOS arm64), the constant data section `__TEXT,__const` is 37,052
+  bytes with the bitmap, 37,892 with the linear layout, 42,356 with the
+  binary search and 47,564 with the direct index, and the bitmap lookup is
+  228 bytes more code than the direct one. With the builtin tables switched,
+  `examples/size_check.rs` goes from 47,556 to 37,044 bytes of constant data
+  and from 209,808 to 210,008 bytes of code: 10,312 bytes less in all. The
+  file goes from 459,728 to 443,312 bytes, but a Mach-O file grows in steps
+  of a 16 KB page, so the section sizes are the numbers to compare.
+
+  Speed, as the smallest of three criterion runs with `--warm-up-time 1
+  --measurement-time 3`, not pinned to a core. The times are for the whole
+  corpus in µs. They were taken in a different session from the table above,
+  so compare inside a row and not across the two tables:
+
+  | corpus       | binary_search | two_level_linear | two_level_bitmap | two_level_direct_index |
+  |--------------|--------------:|-----------------:|-----------------:|-----------------------:|
+  | ascii_source |          3.09 |             4.22 |             2.71 |                   2.56 |
+  | accented     |          2.77 |             4.91 |             2.39 |                   2.27 |
+  | greek_math   |         15.60 |            20.06 |            12.73 |                  12.15 |
+  | cyrillic     |         24.28 |            37.02 |            20.09 |                  18.14 |
+  | cjk          |          6.29 |             7.84 |             7.39 |                   7.39 |
+
+  The bitmap takes 1.00 to 1.11 times as long as the direct index (the
+  worst case is Cyrillic, whose letters spread over two words of the bitmap)
+  and is 1.06 to 2.05 times faster than the linear layout. It beats the
+  binary search on every corpus but CJK, where no two-level layout finds a
+  block and the scan over the blocks runs to its end. Ten kilobytes for at
+  most a tenth of the time is the better trade for a crate that means to be
+  lightweight, so the builtin tables use `two_level_bitmap`;
+  `two_level_direct_index` stays available for users' own tables. A variant
+  with one start per bitmap word (44 bytes per block, one `count_ones` per
+  lookup) was written and dropped unmeasured, as more tuning than the gap
+  calls for.
+
   Payload packing (one string blob with offsets instead of one `&str` per
-  entry) was **not** measured and stays open.
+  entry) was **not** measured and stays open. With the index at 838 bytes it
+  is what is left of the table's footprint: 37,176 bytes of `StaticEntry`
+  (24 bytes each: a 16-byte `&str`, two bytes of flags and profile, six of
+  padding) and 21,188 bytes of strings.
 
   Two side measurements from the same bench file. `EncodeReport` costs
   nothing measurable against `NoReport` — 2.40 µs against 2.66 µs on the
