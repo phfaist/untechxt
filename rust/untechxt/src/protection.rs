@@ -45,17 +45,31 @@ pub enum ValueMode {
 ///
 /// A protection strategy reads the termination to decide whether the value
 /// needs separating from the text that follows it, and how.
+///
+/// The rule that produces a value decides which termination the value has,
+/// and the encoder and the protection strategy trust that decision without
+/// inspecting the value. What counts as a macro name depends on the LaTeX
+/// engine and on the category codes in force where the output is used: `é`
+/// is a letter under XeLaTeX and LuaLaTeX but not under pdfLaTeX, and `@` is
+/// a letter in a package file but not in a document. A rule therefore states
+/// the termination that is safe for the contexts the rule's output is meant
+/// for. When in doubt, choose
+/// [`ValueEndsWithNamedMacro`](ValueTermination::ValueEndsWithNamedMacro):
+/// protecting a value that did not need it costs only a pair of braces or a
+/// space, whereas leaving a value unprotected can change the meaning of the
+/// output. A rule that does not know the termination of its value can read it
+/// off the value's form with the function [`ValueTermination::inspect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueTermination {
-    /// The encoded value parses correctly under a standard document parsing
-    /// state (catcode setting), whatever text follows it. A protection
-    /// strategy writes the value with nothing added.
+    /// The rule vouches that the encoded value parses correctly whatever text
+    /// follows it. A protection strategy writes the value with nothing added.
     ValueIsSelfTerminating,
-    /// The encoded value ends with a macro name, for example `\hat\i`. Text
-    /// placed directly after the value would be read as part of that macro
-    /// name: `\hat\i` followed by `more text` becomes `\hat\imore text`, which
-    /// is wrong. A protection strategy separates the value from what follows,
-    /// for instance by enclosing the value in braces (`{\hat\i}`).
+    /// The rule states that the encoded value may end with a macro name, for
+    /// example `\hat\i`. Text placed directly after the value could be read
+    /// as part of that macro name: `\hat\i` followed by `more text` becomes
+    /// `\hat\imore text`, which is wrong. A protection strategy separates the
+    /// value from what follows, for instance by enclosing the value in braces
+    /// (`{\hat\i}`).
     ValueEndsWithNamedMacro,
     // We might add further variants in the future...
     //
@@ -65,16 +79,29 @@ pub enum ValueTermination {
 }
 
 impl ValueTermination {
-    /// Reads the termination off the form of `encoded`: it
-    /// [ends with a named macro](ValueTermination::ValueEndsWithNamedMacro)
-    /// when it ends in a run of one or more ASCII letters that is immediately
-    /// preceded by a backslash, and is
-    /// [self-terminating](ValueTermination::ValueIsSelfTerminating)
-    /// otherwise.
+    /// Reads the termination off the form of `encoded`, erring on the side of
+    /// protection.
     ///
-    /// A rule that knows the answer states it directly; this is for rules
-    /// that do not, and it is what the static table builders run at compile
-    /// time.
+    /// The function returns
+    /// [`ValueEndsWithNamedMacro`](ValueTermination::ValueEndsWithNamedMacro)
+    /// when `encoded` ends with a backslash followed by one or more characters
+    /// that may belong to a macro name in some context. These characters are
+    /// the ASCII letters, `@` (a letter in package files), and every
+    /// non-ASCII character (Unicode letters are letters under XeLaTeX and
+    /// LuaLaTeX). The function returns
+    /// [`ValueIsSelfTerminating`](ValueTermination::ValueIsSelfTerminating)
+    /// otherwise: when `encoded` ends with a control symbol made of a
+    /// backslash and one other ASCII character, such as `\'` or `\&`, or does
+    /// not end with a macro at all.
+    ///
+    /// The result is sometimes more cautious than needed. For instance,
+    /// `\foo@` is reported as ending with a named macro even though `@` is
+    /// not a letter in a document. Such a value then receives protection it
+    /// did not need, which is harmless.
+    ///
+    /// A rule that knows the termination of its value states it directly;
+    /// this function is for rules that do not, and it is what the static
+    /// table builders run at compile time.
     ///
     /// ```
     /// use untechxt::protection::ValueTermination::{
@@ -85,7 +112,11 @@ impl ValueTermination {
     ///            ValueEndsWithNamedMacro);
     /// assert_eq!(ValueTermination::inspect(r"\hat\i"),
     ///            ValueEndsWithNamedMacro);
+    /// assert_eq!(ValueTermination::inspect(r"\fooé"),
+    ///            ValueEndsWithNamedMacro);
+    /// assert_eq!(ValueTermination::inspect(r"\@"), ValueEndsWithNamedMacro);
     /// assert_eq!(ValueTermination::inspect(r"\'e"), ValueIsSelfTerminating);
+    /// assert_eq!(ValueTermination::inspect(r"\&"), ValueIsSelfTerminating);
     /// assert_eq!(ValueTermination::inspect(r"\r{A}"), ValueIsSelfTerminating);
     /// assert_eq!(ValueTermination::inspect("fi"), ValueIsSelfTerminating);
     /// assert_eq!(ValueTermination::inspect(""), ValueIsSelfTerminating);
@@ -93,7 +124,7 @@ impl ValueTermination {
     pub const fn inspect(encoded: &str) -> Self {
         let bytes = encoded.as_bytes();
         let mut start = bytes.len();
-        while start > 0 && bytes[start - 1].is_ascii_alphabetic() {
+        while start > 0 && is_possible_name_byte(bytes[start - 1]) {
             start -= 1;
         }
         if start < bytes.len() && start > 0 && bytes[start - 1] == b'\\' {
@@ -102,6 +133,12 @@ impl ValueTermination {
             ValueTermination::ValueIsSelfTerminating
         }
     }
+}
+
+/// Whether `byte` may be part of a macro name in some context: an ASCII
+/// letter, `@`, or any byte of a non-ASCII character in UTF-8.
+const fn is_possible_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'@' || byte >= 0x80
 }
 
 /// What a rule states about the value it produces, so that a protection

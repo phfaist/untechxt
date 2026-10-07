@@ -32,5 +32,5 @@ doc = false
 # The program is the std-linking user of a `no_std` library: the file and
 # stream I/O is here, because the library must not do any.
 [dependencies]
-untechxt = { path = "../untechxt", version = "0.1.0" }
+untechxt = { path = "../untechxt", version = "0.1.1" }
 clap.workspace = true

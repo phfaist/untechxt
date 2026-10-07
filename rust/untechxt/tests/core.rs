@@ -285,6 +285,22 @@ fn termination_is_read_off_the_form_of_the_value() {
     assert_eq!(ValueTermination::inspect("''"), Self_);
     assert_eq!(ValueTermination::inspect(""), Self_);
     assert_eq!(ValueTermination::inspect(r"\"), Self_);
+    assert_eq!(ValueTermination::inspect(r"\&"), Self_);
+    assert_eq!(ValueTermination::inspect(r"\\"), Self_);
+    assert_eq!(ValueTermination::inspect(r"\'é"), Self_);
+    assert_eq!(ValueTermination::inspect(r"\textbf{x}é"), Self_);
+}
+
+#[test]
+fn possible_letters_in_a_macro_name_count_as_a_named_macro() {
+    use ValueTermination::ValueEndsWithNamedMacro as Named;
+    // Letters under XeLaTeX and LuaLaTeX.
+    assert_eq!(ValueTermination::inspect(r"\fooé"), Named);
+    assert_eq!(ValueTermination::inspect(r"\é"), Named);
+    // Letters in package files.
+    assert_eq!(ValueTermination::inspect(r"\@"), Named);
+    assert_eq!(ValueTermination::inspect(r"\foo@"), Named);
+    assert_eq!(ValueTermination::inspect(r"\@foo"), Named);
 }
 
 #[test]

@@ -7,7 +7,7 @@ members = ["untechxt", "untechxt-cli"]
 
 # Shared metadata inherited by member crates (`<field>.workspace = true`).
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.86"
 authors = ["Philippe Faist"]
